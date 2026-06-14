@@ -60,7 +60,7 @@ python configure.py
 python bridge.py --login
 
 # 3. Run it
-python bridge.py     # or run-bridge.bat / ./run-bridge.sh
+python bridge.py     # macOS/Linux: ./run-bridge.sh  |  Windows always-on: see below
 ```
 
 (`configure.py` only uses the standard library; if you hit an import error, run
@@ -131,9 +131,10 @@ logoff, OOM), something has to restart it. It writes `.bridge-heartbeat` every
 30s and holds a single-instance lock (`.bridge.lock`), so redundant launches from
 a supervisor are harmless. Pick your platform:
 
-**Windows** — a 1-minute heartbeat watchdog (`watchdog.ps1`). Task Scheduler's
-own restart-on-failure does *not* work here, because the launcher detaches and
-the task "completes" instantly. Register the watchdog instead:
+**Windows** — `watchdog.ps1` both launches the bridge (windowless) and keeps it
+alive. Task Scheduler's own restart-on-failure can't help here, because the
+bridge runs detached in the background and the task "completes" instantly — so
+the watchdog polls the heartbeat instead. Register it to run every minute:
 
 ```bat
 schtasks /Create /TN PokeBridge ^
@@ -195,8 +196,8 @@ uv run --with-requirements requirements.txt python gatekeeper_eval.py
 | `gatekeeper.py` | LLM triage gate + prompt. |
 | `gatekeeper_eval.py` | Offline accuracy/latency eval for the gate. |
 | `configure.py` | Interactive setup — collects credentials and writes `.env`. |
-| `run-bridge.{sh,bat,vbs}` | Launch the bridge (`.vbs` = windowless on Windows). |
-| `watchdog.ps1` | Windows liveness watchdog (relaunches if the heartbeat goes stale). |
+| `run-bridge.sh` | Launch the bridge on macOS/Linux. |
+| `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale (one file). |
 
 ## License
 
