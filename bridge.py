@@ -884,8 +884,25 @@ async def run_forever():
             delay = RECONNECT_MIN
 
 
+def preflight_config() -> list[str]:
+    """Return a list of human-readable problems with the required configuration."""
+    problems = []
+    if not BEEPER_TOKEN:
+        problems.append("BEEPER_TOKEN is not set (Beeper Desktop -> Settings -> Developer).")
+    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+        problems.append("TELEGRAM_API_ID / TELEGRAM_API_HASH are not set (get them at https://my.telegram.org).")
+    if not _env("LLM_API_KEY", "EIGHTSTATE_API_KEY", "OPENAI_API_KEY"):
+        problems.append("LLM_API_KEY is not set (your OpenAI-compatible provider key).")
+    return problems
+
+
 async def main_async():
     log.info("Starting Beeper -> Poke bridge (owner: %s)", OWNER_NAME)
+    if not POKE_BEEPER_CHAT_ID:
+        log.warning(
+            "POKE_BEEPER_CHAT_ID is not set -- the bridge will rely on the handoff "
+            "marker alone to avoid feeding Poke its own messages. See README to set it."
+        )
     if not acquire_singleton():
         return
     load_seen_messages()
@@ -923,6 +940,13 @@ if __name__ == "__main__":
     if "--login" in sys.argv:
         asyncio.run(login_telegram())
     else:
+        problems = preflight_config()
+        if problems:
+            log.error("Cannot start -- missing required configuration in .env:")
+            for p in problems:
+                log.error("  - %s", p)
+            log.error("Copy .env.example to .env and fill it in (see README.md).")
+            sys.exit(1)
         try:
             asyncio.run(main_async())
         except KeyboardInterrupt:
