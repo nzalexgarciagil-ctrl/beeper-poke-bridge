@@ -45,32 +45,44 @@ Beeper Desktop  ──ws──▶  bridge.py  ──▶  gatekeeper (LLM triage)
 - **Python 3.10+**. [`uv`](https://docs.astral.sh/uv/) recommended (handles deps
   automatically); plain `pip` works too.
 
-## Setup
+## Quickstart
+
+Three steps. The setup script asks for your credentials and writes `.env` for
+you — no file editing.
 
 ```bash
-git clone <your-fork> poke-bridge && cd poke-bridge
-cp .env.example .env          # then fill it in (see Configuration)
-```
+git clone <your-fork> beeper-poke-bridge && cd beeper-poke-bridge
 
-Authorize Telegram once (interactive — asks for your phone number + login code).
-This creates the session file so the detached run never needs a console:
+# 1. Paste in your credentials (name, Beeper token, Telegram API id/hash, LLM key)
+./setup.sh           # macOS/Linux        (Windows: setup.bat  or  python configure.py)
 
-```bash
-# with uv:
-uv run --with-requirements requirements.txt python bridge.py --login
-# or with a venv:
-python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/python bridge.py --login
-```
+# 2. Authorize Telegram once (phone number + login code)
+python bridge.py --login
 
-Then run it:
-
-```bash
-uv run --with-requirements requirements.txt python bridge.py
-# or: ./run-bridge.sh   (macOS/Linux)   |   run-bridge.bat (Windows)
+# 3. Run it
+python bridge.py     # or run-bridge.bat / ./run-bridge.sh
 ```
 
 You should see `Connected to Beeper WebSocket` and `Subscribed to all chats`.
+If you forget a credential, the bridge tells you exactly which one. To keep it
+running in the background, see [Keeping it running](#keeping-it-running).
+
+> Where to get each credential: **Beeper token** → Beeper Desktop → Settings →
+> Developer. **Telegram API id/hash** → <https://my.telegram.org> → API
+> development tools. **LLM key** → your OpenAI-compatible provider.
+
+## Setup (manual)
+
+Prefer to edit the file yourself? Copy the template and fill it in:
+
+```bash
+cp .env.example .env          # then edit it (see Configuration below)
+uv run --with-requirements requirements.txt python bridge.py --login
+uv run --with-requirements requirements.txt python bridge.py
+```
+
+`setup.sh`/`setup.bat` just run `configure.py` through `uv`; everything works
+the same with a plain `pip install -r requirements.txt` in a venv.
 
 ### Letting Poke read your chats (the tunnel)
 
@@ -154,10 +166,12 @@ uv run --with-requirements requirements.txt python gatekeeper_eval.py
 
 | File | Purpose |
 |---|---|
-| `bridge.py` | Main process: Beeper listener, filters, debounce, Telegram handoff. |
+| `bridge.py` | Main process: Beeper listener, filters, debounce, single-instance lock, Telegram handoff. |
 | `gatekeeper.py` | LLM triage gate + prompt. |
 | `gatekeeper_eval.py` | Offline accuracy/latency eval for the gate. |
-| `run-bridge.*` | Launchers (`.sh`, `.bat`, `.vbs`). |
+| `configure.py` | Interactive setup — collects credentials and writes `.env`. |
+| `setup.*` / `run-bridge.*` | Setup and launcher scripts (`.sh`, `.bat`). |
+| `watchdog.ps1` | Windows liveness watchdog (relaunches if the heartbeat goes stale). |
 | `deploy/` | systemd / launchd / Windows supervisor configs. |
 
 ## License
