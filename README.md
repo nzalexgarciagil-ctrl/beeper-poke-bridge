@@ -117,10 +117,14 @@ logoff, OOM), something has to restart it. Use a supervisor:
 
 - **Linux** — `deploy/systemd/poke-bridge.service` (`Restart=always`)
 - **macOS** — `deploy/launchd/co.poke.bridge.plist` (`KeepAlive`)
-- **Windows** — `deploy/windows/README.md` (Task Scheduler restart-on-failure, or NSSM)
+- **Windows** — `deploy/windows/README.md` (a 1-minute heartbeat watchdog; note
+  that Task Scheduler's restart-on-failure does *not* work with the detached
+  launcher, so use the watchdog).
 
-The bridge writes `.bridge-heartbeat` (a unix timestamp) every 30s for external
-liveness checks.
+The bridge writes `.bridge-heartbeat` (a unix timestamp) every 30s; the Windows
+watchdog (`watchdog.ps1`) relaunches the bridge if it goes stale. A
+single-instance lock (`.bridge.lock`) guarantees only one bridge ever runs, so
+redundant launches from a supervisor are harmless.
 
 ## Tuning the gate
 
