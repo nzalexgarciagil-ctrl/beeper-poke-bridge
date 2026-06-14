@@ -54,7 +54,7 @@ you — no file editing.
 git clone <your-fork> beeper-poke-bridge && cd beeper-poke-bridge
 
 # 1. Paste in your credentials (name, Beeper token, Telegram API id/hash, LLM key)
-./setup.sh           # macOS/Linux        (Windows: setup.bat  or  python configure.py)
+python configure.py
 
 # 2. Authorize Telegram once (phone number + login code)
 python bridge.py --login
@@ -62,6 +62,9 @@ python bridge.py --login
 # 3. Run it
 python bridge.py     # or run-bridge.bat / ./run-bridge.sh
 ```
+
+(`configure.py` only uses the standard library; if you hit an import error, run
+it through `uv run --with-requirements requirements.txt python configure.py`.)
 
 You should see `Connected to Beeper WebSocket` and `Subscribed to all chats`.
 If you forget a credential, the bridge tells you exactly which one. To keep it
@@ -81,23 +84,22 @@ uv run --with-requirements requirements.txt python bridge.py --login
 uv run --with-requirements requirements.txt python bridge.py
 ```
 
-`setup.sh`/`setup.bat` just run `configure.py` through `uv`; everything works
-the same with a plain `pip install -r requirements.txt` in a venv.
+Everything works the same with a plain `pip install -r requirements.txt` in a venv.
 
 ### Letting Poke read your chats (the tunnel)
 
 For Poke to read a chat and draft a reply, it needs access to Beeper's MCP. The
-Poke CLI exposes your local Beeper MCP to Poke's cloud:
+Poke CLI exposes your local Beeper MCP to Poke's cloud — one command, leave it
+running alongside the bridge:
 
 ```bash
 npm i -g poke && poke login
-./poke-tunnel.sh                     # macOS/Linux
-#   or  poke-tunnel.vbs / poke-tunnel.bat on Windows
+poke tunnel http://localhost:23375/v0/mcp -n "Beeper Desktop"
 ```
 
-Override the endpoint with `POKE_MCP_URL` if your Beeper version serves the MCP
-elsewhere. The bridge works without this, but Poke won't be able to read history
-to draft in-voice replies.
+The bridge works without this, but Poke won't be able to read history to draft
+in-voice replies. (On Windows, wrap that command in a `.vbs`/Task Scheduler entry
+if you want it windowless and persistent.)
 
 ## Configuration
 
@@ -125,18 +127,41 @@ notifications until that conversation goes quiet.
 ## Keeping it running
 
 The bridge auto-reconnects to Beeper, but if the **process** is killed (sleep,
-logoff, OOM), something has to restart it. Use a supervisor:
+logoff, OOM), something has to restart it. It writes `.bridge-heartbeat` every
+30s and holds a single-instance lock (`.bridge.lock`), so redundant launches from
+a supervisor are harmless. Pick your platform:
 
-- **Linux** — `deploy/systemd/poke-bridge.service` (`Restart=always`)
-- **macOS** — `deploy/launchd/co.poke.bridge.plist` (`KeepAlive`)
-- **Windows** — `deploy/windows/README.md` (a 1-minute heartbeat watchdog; note
-  that Task Scheduler's restart-on-failure does *not* work with the detached
-  launcher, so use the watchdog).
+**Windows** — a 1-minute heartbeat watchdog (`watchdog.ps1`). Task Scheduler's
+own restart-on-failure does *not* work here, because the launcher detaches and
+the task "completes" instantly. Register the watchdog instead:
 
-The bridge writes `.bridge-heartbeat` (a unix timestamp) every 30s; the Windows
-watchdog (`watchdog.ps1`) relaunches the bridge if it goes stale. A
-single-instance lock (`.bridge.lock`) guarantees only one bridge ever runs, so
-redundant launches from a supervisor are harmless.
+```bat
+schtasks /Create /TN PokeBridge ^
+  /TR "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\path\to\watchdog.ps1" ^
+  /SC MINUTE /MO 1 /RU %USERNAME% /IT /RL LIMITED /F
+```
+
+It starts the bridge within a minute of logon and relaunches it within a minute
+of any death. If cold starts are slow, exclude the dep cache from Defender:
+`Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\uv"` (elevated).
+
+**Linux** — a systemd user unit:
+
+```ini
+[Unit]
+Description=Beeper -> Poke bridge
+After=network-online.target
+[Service]
+WorkingDirectory=%h/beeper-poke-bridge
+ExecStart=%h/beeper-poke-bridge/.venv/bin/python bridge.py
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target
+```
+
+**macOS** — a launchd agent with `<key>KeepAlive</key><true/>` pointing
+`ProgramArguments` at your venv's `python bridge.py`, with `RunAtLoad` true.
 
 ## Tuning the gate
 
@@ -170,9 +195,8 @@ uv run --with-requirements requirements.txt python gatekeeper_eval.py
 | `gatekeeper.py` | LLM triage gate + prompt. |
 | `gatekeeper_eval.py` | Offline accuracy/latency eval for the gate. |
 | `configure.py` | Interactive setup — collects credentials and writes `.env`. |
-| `setup.*` / `run-bridge.*` | Setup and launcher scripts (`.sh`, `.bat`). |
+| `run-bridge.{sh,bat,vbs}` | Launch the bridge (`.vbs` = windowless on Windows). |
 | `watchdog.ps1` | Windows liveness watchdog (relaunches if the heartbeat goes stale). |
-| `deploy/` | systemd / launchd / Windows supervisor configs. |
 
 ## License
 

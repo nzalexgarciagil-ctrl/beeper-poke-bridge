@@ -6,7 +6,6 @@ Prompts for your credentials and writes a `.env` file -- no manual editing.
 Re-run any time to update values (existing ones are offered as defaults).
 
     python configure.py
-    # or: setup.bat (Windows) / ./setup.sh (macOS/Linux)
 """
 
 from __future__ import annotations

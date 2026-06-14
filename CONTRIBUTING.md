@@ -12,7 +12,6 @@ project — contributions that keep it simple and reliable are very welcome.
 | `gatekeeper_eval.py` | Offline accuracy/latency eval for the gate. |
 | `configure.py` | Interactive `.env` setup. |
 | `watchdog.ps1` | Windows liveness watchdog. |
-| `deploy/` | systemd / launchd / Windows supervisor configs. |
 
 ## Dev setup
 
@@ -25,7 +24,8 @@ uv run --with-requirements requirements.txt python bridge.py
 
 `uv` is recommended (no venv to manage). Plain `pip install -r requirements.txt`
 in a venv works too. On Windows, keep the dependency cache out of `Downloads` or
-add a Defender exclusion — see `deploy/windows/README.md`.
+add a Defender exclusion (`Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\uv"`,
+elevated). See **Keeping it running** in the README for the watchdog setup.
 
 ## Changing the gate
 
