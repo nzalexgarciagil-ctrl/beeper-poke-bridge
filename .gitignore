@@ -1,0 +1,25 @@
+# Secrets and local config
+.env
+*.session
+*.session-journal
+
+# Telethon / runtime state
+.bridge-seen.json
+.bridge-seen.json.tmp
+.bridge-heartbeat
+.bridge.lock
+
+# Logs (incl. rotation backups: bridge.log.1 etc.)
+bridge.log
+bridge.log.*
+bridge.err
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Dev scratch, evals, and local archives (may contain secrets/old backups)
+.building/
+archive/
+*_results.json

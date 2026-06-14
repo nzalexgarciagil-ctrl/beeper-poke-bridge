@@ -1,0 +1,27 @@
+# systemd unit for the Beeper -> Poke bridge (Linux).
+#
+# Install:
+#   sudo cp deploy/systemd/poke-bridge.service /etc/systemd/system/
+#   # edit WorkingDirectory / ExecStart / User below to match your install
+#   systemctl --user daemon-reload && systemctl --user enable --now poke-bridge
+#   (or use system-wide units with sudo + [Install] WantedBy=multi-user.target)
+#
+# Beeper Desktop must be running in the same session for the local API to exist.
+
+[Unit]
+Description=Beeper -> Poke bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/poke-bridge
+ExecStart=%h/poke-bridge/.venv/bin/python bridge.py
+# Auto-restart on crash or hard kill (the direct fix for "it silently died").
+Restart=always
+RestartSec=5
+# If the process wedges, systemd's own watchdog can be added; the app also
+# writes .bridge-heartbeat every 30s for external liveness checks.
+
+[Install]
+WantedBy=default.target

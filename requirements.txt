@@ -1,0 +1,5 @@
+telethon>=1.36
+requests>=2.31
+websockets>=12.0
+openai>=1.40
+python-dotenv>=1.0
