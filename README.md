@@ -1,5 +1,9 @@
 # Beeper → Poke Bridge
 
+<p align="center">
+  <img src="banner.jpeg" alt="Poke × Beeper" width="520">
+</p>
+
 **Let your [Poke](https://poke.com) assistant handle every messaging app —
 WhatsApp, Instagram, X, Telegram, Discord, Signal, iMessage, and more — not just
 email.** This bridge listens to every chat in [Beeper](https://www.beeper.com),
