@@ -5,7 +5,7 @@ One-shot interactive setup for the Beeper -> Poke bridge.
 Walks you through the whole thing: collects your credentials and writes `.env`,
 installs dependencies, logs in to Telegram, points you at the Poke tunnel, and
 (optionally) installs the always-on supervisor and starts the bridge. Re-run any
-time — existing values are offered as defaults and steps are safe to repeat.
+time; existing values are offered as defaults and steps are safe to repeat.
 
     python configure.py
 
@@ -186,7 +186,7 @@ def tunnel_setup() -> None:
                 subprocess.Popen(["cmd", "/c", "start", "", "cmd", "/k", cmd], cwd=HERE)
             else:
                 subprocess.Popen(cmd, shell=True, cwd=HERE)
-            print("  Tunnel launching — keep that window open.")
+            print("  Tunnel launching. Keep that window open.")
         except Exception as e:
             print(f"  Could not auto-launch ({e}); run the command above yourself.")
     else:
@@ -246,7 +246,7 @@ def start_now(runner: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    print("\n=== Beeper -> Poke bridge — setup ===")
+    print("\n=== Beeper -> Poke bridge setup ===")
     print("Press Enter to accept a [default]. Ctrl+C to stop any time.\n")
 
     collect_credentials()
