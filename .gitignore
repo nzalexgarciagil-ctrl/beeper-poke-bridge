@@ -18,6 +18,8 @@ bridge.err
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
 
 # Dev scratch, evals, and local archives (may contain secrets/old backups)
 .building/
