@@ -54,21 +54,28 @@ you — no file editing.
 git clone <your-fork> beeper-poke-bridge && cd beeper-poke-bridge
 
 # 1. Paste in your credentials (name, Beeper token, Telegram API id/hash, LLM key)
-python configure.py
+uv run --with-requirements requirements.txt python configure.py
 
 # 2. Authorize Telegram once (phone number + login code)
-python bridge.py --login
+uv run --with-requirements requirements.txt python bridge.py --login
 
-# 3. Run it (or: uv run --with-requirements requirements.txt python bridge.py)
-python bridge.py     # Windows always-on: see "Keeping it running" below
+# 3. Run it
+uv run --with-requirements requirements.txt python bridge.py
 ```
 
-(`configure.py` only uses the standard library; if you hit an import error, run
-it through `uv run --with-requirements requirements.txt python configure.py`.)
+`uv` installs the dependencies automatically. No `uv`? Create a venv and
+`pip install -r requirements.txt`, then use plain `python …` for the three
+commands above.
 
 You should see `Connected to Beeper WebSocket` and `Subscribed to all chats`.
-If you forget a credential, the bridge tells you exactly which one. To keep it
-running in the background, see [Keeping it running](#keeping-it-running).
+If you forget a credential, the bridge tells you exactly which one.
+
+**Two more pieces:**
+- For Poke to actually *draft replies* (not just get pinged), set up the
+  one-line [tunnel](#letting-poke-read-your-chats-the-tunnel) so it can read your
+  chats.
+- To keep the bridge running after you close the terminal / sleep the machine,
+  see [Keeping it running](#keeping-it-running).
 
 > Where to get each credential: **Beeper token** → Beeper Desktop → Settings →
 > Developer. **Telegram API id/hash** → <https://my.telegram.org> → API

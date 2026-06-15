@@ -99,11 +99,12 @@ def main() -> int:
     write_env(values)
     print(f"\nWrote {ENV_PATH}")
 
-    print("\nNext steps:")
+    print("\nNext steps (drop the 'uv run ...' prefix if you installed deps with pip):")
     print("  1) Authorize Telegram (one-time, asks for phone + login code):")
-    print("       python bridge.py --login")
+    print("       uv run --with-requirements requirements.txt python bridge.py --login")
     print("  2) Start the bridge:")
-    print("       python bridge.py")
+    print("       uv run --with-requirements requirements.txt python bridge.py")
+    print("  3) Let Poke read your chats so it can draft replies (see README: the tunnel).")
     print("\nSee README.md to keep it running in the background.\n")
 
     try:
