@@ -47,35 +47,29 @@ Beeper Desktop  ──ws──▶  bridge.py  ──▶  gatekeeper (LLM triage)
 
 ## Quickstart
 
-Three steps. The setup script asks for your credentials and writes `.env` for
-you — no file editing.
+**One script does everything** — it asks for your credentials, installs
+dependencies, logs you into Telegram, points you at the tunnel, and (optionally)
+sets up always-on running and starts the bridge.
 
 ```bash
 git clone <your-fork> beeper-poke-bridge && cd beeper-poke-bridge
-
-# 1. Paste in your credentials (name, Beeper token, Telegram API id/hash, LLM key)
-uv run --with-requirements requirements.txt python configure.py
-
-# 2. Authorize Telegram once (phone number + login code)
-uv run --with-requirements requirements.txt python bridge.py --login
-
-# 3. Run it
-uv run --with-requirements requirements.txt python bridge.py
+python configure.py        # or: uv run python configure.py
 ```
 
-`uv` installs the dependencies automatically. No `uv`? Create a venv and
-`pip install -r requirements.txt`, then use plain `python …` for the three
-commands above.
+That's it — answer the prompts. `configure.py` uses only the standard library,
+so it runs before anything is installed and shells out to [`uv`](https://docs.astral.sh/uv/)
+(or a local venv) for the rest. It walks you through, each step skippable:
 
-You should see `Connected to Beeper WebSocket` and `Subscribed to all chats`.
-If you forget a credential, the bridge tells you exactly which one.
+1. **Credentials** → writes `.env`
+2. **Dependencies** → installed via uv (or a venv it creates)
+3. **Telegram login** → one-time phone + code
+4. **Tunnel** → the one-line Poke CLI command so Poke can read your chats
+5. **Always-on** → installs the supervisor (Windows task; templates for Linux/macOS)
+6. **Start** → launches the bridge
 
-**Two more pieces:**
-- For Poke to actually *draft replies* (not just get pinged), set up the
-  one-line [tunnel](#letting-poke-read-your-chats-the-tunnel) so it can read your
-  chats.
-- To keep the bridge running after you close the terminal / sleep the machine,
-  see [Keeping it running](#keeping-it-running).
+When it's running you'll see `Connected to Beeper WebSocket` and `Subscribed to
+all chats`. Re-run `configure.py` any time — existing values are offered as
+defaults and every step is safe to repeat.
 
 > Where to get each credential: **Beeper token** → Beeper Desktop → Settings →
 > Developer. **Telegram API id/hash** → <https://my.telegram.org> → API
@@ -205,7 +199,7 @@ always stays silent.
 | File | Purpose |
 |---|---|
 | `bridge.py` | The whole bridge: Beeper listener, filters, debounce, single-instance lock, the LLM gate, and the Telegram handoff. |
-| `configure.py` | Interactive setup — collects credentials and writes `.env`. |
+| `configure.py` | One-shot installer — credentials, dependencies, Telegram login, tunnel, always-on supervisor, and start. |
 | `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale. |
 | `run-watchdog-hidden.vbs` | Windows: runs the watchdog with no console window (used by the scheduled task). |
 | `requirements.txt` / `.env.example` | Dependencies and the config template. |
