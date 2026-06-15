@@ -1,11 +1,11 @@
 # Beeper → Poke Bridge
 
-Make [Poke](https://poke.com) proactive about **all** your messaging, not just
-email. This bridge listens to every chat in [Beeper](https://www.beeper.com)
-(WhatsApp, Discord, Telegram, Instagram, Signal, iMessage, …), runs each
-incoming message through a fast LLM **gatekeeper**, and — only when something
-genuinely deserves your attention — pings Poke to give you a heads-up and draft
-a reply in your voice.
+**Let your [Poke](https://poke.com) assistant handle every messaging app —
+WhatsApp, Instagram, X, Telegram, Discord, Signal, iMessage, and more — not just
+email.** This bridge listens to every chat in [Beeper](https://www.beeper.com),
+runs each incoming message through a fast LLM **gatekeeper**, and — only when
+something genuinely deserves your attention — pings Poke to give you a heads-up
+and draft a reply in your voice.
 
 The whole point is **silence by default**. The gate is tuned to protect your
 attention: banter, memes, group side-chatter, and cold DMs stay invisible; a
