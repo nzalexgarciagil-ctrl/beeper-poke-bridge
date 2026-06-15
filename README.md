@@ -26,8 +26,8 @@ Beeper Desktop  ──ws──▶  bridge.py  ──▶  gatekeeper (LLM triage)
 2. **Cheap filters** — drops your own messages, reactions, call notices,
    emoji-only bursts, and chats you're already actively replying in. Rapid-fire
    messages from one chat are debounced into a single event.
-3. **Gate** — `gatekeeper.py` asks an LLM one question: *is this worth
-   interrupting the owner right now?* Adapted from Poke's own email-triage
+3. **Gate** — the gatekeeper (in `bridge.py`) asks an LLM one question: *is this
+   worth interrupting the owner right now?* Adapted from Poke's own email-triage
    prompt. Returns JSON `{justification, take_action, summary}`.
 4. **Handoff** — on a pass, the bridge messages the Poke bot on Telegram with a
    heads-up and asks Poke to read the chat (via its Beeper MCP) and draft a
@@ -59,8 +59,8 @@ python configure.py
 # 2. Authorize Telegram once (phone number + login code)
 python bridge.py --login
 
-# 3. Run it
-python bridge.py     # macOS/Linux: ./run-bridge.sh  |  Windows always-on: see below
+# 3. Run it (or: uv run --with-requirements requirements.txt python bridge.py)
+python bridge.py     # Windows always-on: see "Keeping it running" below
 ```
 
 (`configure.py` only uses the standard library; if you hit an import error, run
@@ -132,19 +132,24 @@ logoff, OOM), something has to restart it. It writes `.bridge-heartbeat` every
 a supervisor are harmless. Pick your platform:
 
 **Windows** — `watchdog.ps1` both launches the bridge (windowless) and keeps it
-alive. Task Scheduler's own restart-on-failure can't help here, because the
-bridge runs detached in the background and the task "completes" instantly — so
-the watchdog polls the heartbeat instead. Register it to run every minute:
+alive; `run-watchdog-hidden.vbs` runs the watchdog itself with no console window.
+Task Scheduler's own restart-on-failure can't help here, because the bridge runs
+detached in the background and the task "completes" instantly — so the watchdog
+polls the heartbeat instead. Register it to run every minute:
 
 ```bat
 schtasks /Create /TN PokeBridge ^
-  /TR "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\path\to\watchdog.ps1" ^
+  /TR "wscript.exe \"C:\path\to\run-watchdog-hidden.vbs\"" ^
   /SC MINUTE /MO 1 /RU %USERNAME% /IT /RL LIMITED /F
 ```
 
 It starts the bridge within a minute of logon and relaunches it within a minute
-of any death. If cold starts are slow, exclude the dep cache from Defender:
-`Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\uv"` (elevated).
+of any death. If cold starts are slow, exclude the uv dirs from Defender
+(elevated PowerShell):
+
+```powershell
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\uv","$env:APPDATA\uv"
+```
 
 **Linux** — a systemd user unit:
 
@@ -166,14 +171,10 @@ WantedBy=default.target
 
 ## Tuning the gate
 
-Behaviour is almost entirely in the `gatekeeper.py` system prompt. Edit it to
-change what earns an interruption. `gatekeeper_eval.py` runs a labelled set of
-messages through one or more models and reports accuracy + latency:
-
-```bash
-uv run --with-requirements requirements.txt python gatekeeper_eval.py
-# compare models: EVAL_MODELS="gpt-4o-mini,gpt-4.1-nano" ...python gatekeeper_eval.py
-```
+Behaviour is almost entirely in the gate system prompt — the `_gate_system_prompt`
+function near the top of `bridge.py`. Edit it to change what earns an
+interruption: who counts as the owner, how high the bar is, what always passes or
+always stays silent.
 
 ## Privacy & safety
 
@@ -192,12 +193,11 @@ uv run --with-requirements requirements.txt python gatekeeper_eval.py
 
 | File | Purpose |
 |---|---|
-| `bridge.py` | Main process: Beeper listener, filters, debounce, single-instance lock, Telegram handoff. |
-| `gatekeeper.py` | LLM triage gate + prompt. |
-| `gatekeeper_eval.py` | Offline accuracy/latency eval for the gate. |
+| `bridge.py` | The whole bridge: Beeper listener, filters, debounce, single-instance lock, the LLM gate, and the Telegram handoff. |
 | `configure.py` | Interactive setup — collects credentials and writes `.env`. |
-| `run-bridge.sh` | Launch the bridge on macOS/Linux. |
-| `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale (one file). |
+| `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale. |
+| `run-watchdog-hidden.vbs` | Windows: runs the watchdog with no console window (used by the scheduled task). |
+| `requirements.txt` / `.env.example` | Dependencies and the config template. |
 
 ## License
 

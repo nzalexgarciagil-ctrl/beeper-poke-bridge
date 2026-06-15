@@ -103,7 +103,7 @@ def main() -> int:
     print("  1) Authorize Telegram (one-time, asks for phone + login code):")
     print("       python bridge.py --login")
     print("  2) Start the bridge:")
-    print("       python bridge.py        (macOS/Linux: ./run-bridge.sh)")
+    print("       python bridge.py")
     print("\nSee README.md to keep it running in the background.\n")
 
     try:

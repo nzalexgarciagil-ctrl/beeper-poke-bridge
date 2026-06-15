@@ -12,8 +12,9 @@ $hbFile  = Join-Path $PSScriptRoot '.bridge-heartbeat'
 $logFile = Join-Path $PSScriptRoot 'watchdog.log'
 $now = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 
+$hbExists = Test-Path $hbFile
 $age = 999999
-if (Test-Path $hbFile) {
+if ($hbExists) {
     $val = (Get-Content $hbFile -Raw).Trim()
     if ($val -match '^\d+$') { $age = $now - [int64]$val }
 }
@@ -24,18 +25,20 @@ if ($age -lt 90) { exit 0 }
 $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Where-Object { $_.CommandLine -like '*bridge.py*' })
 
-# Stale heartbeat but a bridge process exists and it's been < 5 min: almost
-# certainly still cold-starting (dependency scan on first import). Give it time.
-if ($procs.Count -gt 0 -and $age -lt 300) {
-    Add-Content $logFile "$(Get-Date -Format s) heartbeat stale ${age}s, bridge process present - waiting for startup"
-    exit 0
-}
-
-# Dead, or hung past 5 min: clean up any stragglers and relaunch windowless.
+# A bridge process exists. Two cases:
+#   - No heartbeat file yet, or it's < 5 min old: the bridge is still cold-starting
+#     (uv resolve + Defender scan can take a minute or two). Leave it ALONE -- do
+#     not kill a process that simply hasn't reached its first heartbeat yet.
+#   - Heartbeat exists AND is older than 5 min: genuinely hung -> kill & relaunch.
 if ($procs.Count -gt 0) {
-    Add-Content $logFile "$(Get-Date -Format s) heartbeat stale ${age}s, killing hung bridge ($($procs.Count) proc)"
-    $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-    Start-Sleep -Seconds 2
+    if ($hbExists -and $age -gt 300) {
+        Add-Content $logFile "$(Get-Date -Format s) heartbeat hung at ${age}s, killing ($($procs.Count) proc)"
+        $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+        Start-Sleep -Seconds 2
+    } else {
+        Add-Content $logFile "$(Get-Date -Format s) bridge process present (hb age ${age}s) - waiting for startup"
+        exit 0
+    }
 }
 
 Add-Content $logFile "$(Get-Date -Format s) launching bridge (heartbeat age ${age}s)"
