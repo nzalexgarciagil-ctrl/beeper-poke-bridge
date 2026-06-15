@@ -88,18 +88,22 @@ Everything works the same with a plain `pip install -r requirements.txt` in a ve
 
 ### Letting Poke read your chats (the tunnel)
 
-For Poke to read a chat and draft a reply, it needs access to Beeper's MCP. The
-Poke CLI exposes your local Beeper MCP to Poke's cloud — one command, leave it
-running alongside the bridge:
+The bridge only *notifies* Poke. For Poke to read the chat and draft a reply, it
+needs your Beeper MCP. The official, easiest way is the **Poke CLI tunnel**
+([Poke docs](https://poke.com/docs/mcp-servers)) — no domain, no Cloudflare:
 
 ```bash
-npm i -g poke && poke login
-poke tunnel http://localhost:23375/v0/mcp -n "Beeper Desktop"
+# Beeper Desktop must be running; it serves its MCP on the same local port the
+# bridge uses (BEEPER_API_PORT, default 23373).
+npx poke@latest tunnel http://localhost:23373/v0/mcp -n "Beeper Desktop"
 ```
 
-The bridge works without this, but Poke won't be able to read history to draft
-in-voice replies. (On Windows, wrap that command in a `.vbs`/Task Scheduler entry
-if you want it windowless and persistent.)
+Leave it running alongside the bridge — the tunnel stays active until you stop
+it, and Poke handles auth automatically (DCR). Without it the bridge still
+triggers Poke, but Poke can't read history to draft in-voice replies. To keep it
+windowless and persistent on Windows, supervise it like the bridge (see *Keeping
+it running*) — or, for a permanent public endpoint, run your own Cloudflare named
+tunnel to the same local URL (advanced; put Cloudflare Access in front of it).
 
 ## Configuration
 
