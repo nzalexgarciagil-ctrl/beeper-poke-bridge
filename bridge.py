@@ -7,21 +7,28 @@ Listens to Beeper's WebSocket stream for incoming messages across all platforms
   1. Gatekeeper (below): a fast LLM triage call -- modelled on Poke's
      own email triage -- decides whether a message is important enough to
      interrupt the owner. If not, the bridge stays completely silent.
-  2. Handoff: for messages that clear the gate, the bridge sends Poke a heads-up
-     and asks it to draft an in-voice reply (Poke reads the chat via its Beeper
-     MCP). Draft-only; the bridge never sends replies to third parties.
+  2. Handoff: for messages that clear the gate, the bridge texts Poke a heads-up
+     over iMessage and asks it to draft an in-voice reply (Poke reads the chat
+     via its Beeper MCP). Draft-only; the bridge never sends replies to third
+     parties.
 
 Before the gate, cheap filters drop self-messages, noise (call notices),
 emoji-only batches, and chats the owner is already actively replying in.
 
-Config is loaded from a local .env (see .env.example). Run `python bridge.py
---login` once to create the Telegram session, then `python bridge.py` to run.
+The handoff transport is selectable via HANDOFF_TRANSPORT in .env:
+  - "imessage" (default): texts Poke through the macOS Messages app (AppleScript);
+    requires macOS signed in to iMessage, no login step.
+  - "telegram": a Telegram user session messages the Poke bot; run
+    `python bridge.py --login` once to create the session.
+
+Config is loaded from a local .env (see .env.example).
 """
 
 from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import ctypes
 from datetime import datetime
 import html
@@ -31,12 +38,13 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
 import time
 
 import requests
 from openai import OpenAI
-from telethon import TelegramClient
 import websockets
 
 from dotenv import load_dotenv
@@ -70,11 +78,24 @@ BEEPER_TOKEN = os.environ.get("BEEPER_TOKEN", "")
 
 OWNER_NAME = _env("OWNER_NAME", default="the owner")
 
+# --- Handoff transport: how the bridge reaches Poke -------------------------
+# "imessage" -> macOS Messages (AppleScript), no extra account. (default)
+# "telegram" -> a Telegram user session messaging the Poke bot.
+HANDOFF_TRANSPORT = _env("HANDOFF_TRANSPORT", default="imessage").lower()
+
+# iMessage handoff target: Poke's iMessage number (or any iMessage handle/email).
+# Defaults to Poke's public number; override in .env if yours differs.
+POKE_IMESSAGE_HANDLE = os.environ.get("POKE_IMESSAGE_HANDLE", "+16503347837").strip()
+
+# Telegram handoff (only used when HANDOFF_TRANSPORT=telegram).
 TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH")
 TELEGRAM_SESSION = str(HERE / os.environ.get("TELEGRAM_SESSION_NAME", "telegram-poke-bridge"))
 POKE_TELEGRAM_USERNAME = os.environ.get("POKE_TELEGRAM_USERNAME", "interaction_poke_bot")
-MAX_TELEGRAM_MESSAGE = 3900
+
+# Keep handoffs bounded so a runaway batch can't produce a multi-screen message.
+# 4000 also stays under Telegram's 4096 hard limit when that transport is used.
+MAX_HANDOFF_MESSAGE = int(os.environ.get("MAX_HANDOFF_MESSAGE", "4000"))
 CONTEXT_LOOKBACK_SECONDS = 15 * 60
 
 # Reconnect delay range (exponential backoff)
@@ -116,9 +137,9 @@ STARTUP_REPLAY_GRACE = 30
 BATCH_DELAY = 20
 
 # Never feed Poke's own chat back into Poke. This is the Beeper room ID of YOUR
-# Telegram chat with the Poke bot -- it differs per user, so it is configured in
-# .env (see README for how to find it). If unset, only the handoff marker below
-# protects against feedback loops.
+# chat with Poke (the iMessage thread with Poke, as it appears in Beeper) -- it
+# differs per user, so it is configured in .env (see README for how to find it).
+# If unset, only the handoff marker below protects against feedback loops.
 POKE_BEEPER_CHAT_ID = os.environ.get("POKE_BEEPER_CHAT_ID", "").strip()
 IGNORED_CHAT_IDS = {c for c in {POKE_BEEPER_CHAT_ID} if c}
 
@@ -140,29 +161,46 @@ HANDOFF_PREFIX = "A message worth surfacing just came in."
 BRIDGE_MARKER = "⁣​⁣"  # invisible separator + zero-width space
 
 
-def render_handoff(payload: dict, summary: str, chat_id: str = "", sender_id: str = "") -> str:
+def render_handoff(payload: dict, chat_id: str = "", sender_id: str = "") -> str:
     """Heads-up + in-voice draft request handed to the conversational Poke."""
     chat_name = payload.get("chat", {}).get("name", "Unknown")
     chat_type = payload.get("chat", {}).get("type", "unknown")
     sender = payload.get("from", "Unknown")
     msgs = payload.get("messages") or [{"sender": sender, "text": payload.get("text", "")}]
     verbatim = "\n".join(f"  {m.get('sender', sender)}: {m.get('text', '')}" for m in msgs)
-    text = (
-        f"{HANDOFF_PREFIX} Do two things:\n"
-        f"1) Give {OWNER_NAME} a one-line heads-up in your own voice -- who it's from and what they need.\n"
-        "2) Use your Beeper MCP to open this chat and read the recent history, so you understand who "
-        f"this person is to {OWNER_NAME} and exactly how {OWNER_NAME} talks to them (tone, length, slang, "
-        f"punctuation). Then draft a reply IN {OWNER_NAME.upper()}'S VOICE -- the message {OWNER_NAME} "
-        "himself would send back to this person, calibrated to how close they are and how serious this "
-        "message is. Don't ask whether to draft; just draft it. Show the draft clearly so it can be "
-        "copy-pasted. You cannot send it (your Beeper access is read-only) and you must not try -- "
-        "drafting only. Preserve any code, link, amount, or deadline exactly.\n\n"
-        f"From: {sender} on {payload.get('platform', 'Unknown')} -- chat: {chat_name} ({chat_type})\n"
-        f"Beeper lookup -> chatID: {chat_id or 'unknown'}  senderID: {sender_id or 'unknown'}\n\n"
-        f"What they actually said:\n{verbatim}\n\n"
-        f"Why it's worth surfacing: {summary}"
+    platform = payload.get("platform", "Unknown")
+    owner = OWNER_NAME
+    head = (
+        f"{HANDOFF_PREFIX} It's for {owner} on {platform}, from "
+        f"{sender} (chat: {chat_name} ({chat_type})).\n\n"
+        "What they said:\n"
     )
-    return text[:MAX_TELEGRAM_MESSAGE - len(BRIDGE_MARKER)] + BRIDGE_MARKER
+    tail = (
+        f"\n\nBeeper lookup -> chatID: {chat_id or 'unknown'}  senderID: {sender_id or 'unknown'}\n\n"
+        "Now do this:\n"
+        "1) Use your Beeper MCP to open this chat and read back through the history. Work out who "
+        f"this person is to {owner}, what their relationship is, and the context behind what they're "
+        "asking right now.\n"
+        f"2) Study how {owner} actually talks to THIS person specifically -- the tone, length, slang, "
+        "emoji, punctuation, and patterns he uses with them (which differ from how he talks to others). "
+        "Gather substantive evidence from real prior messages before you write anything; don't guess at "
+        "his voice.\n"
+        f"3) Once you genuinely understand the relationship and have solid evidence of {owner}'s patterns "
+        f"with them, draft the reply {owner} would send back -- in his voice, the way he talks to this "
+        "person, calibrated to how close they are and how serious the message is. Preserve any code, "
+        "link, amount, or deadline exactly. Don't ask whether to draft; just draft it.\n"
+        f"4) Give {owner} a heads-up: who messaged, why they messaged, and then the drafted reply, shown "
+        "clearly so he can copy-paste it.\n\n"
+        "You cannot send the reply (your Beeper access is read-only) and must not try -- drafting only."
+    )
+    # Only the quoted message is allowed to be trimmed -- the fixed instructions
+    # (and the marker) must always survive so Poke never gets a severed prompt.
+    budget = MAX_HANDOFF_MESSAGE - len(BRIDGE_MARKER) - len(head) - len(tail)
+    if budget < 0:
+        budget = 0
+    if len(verbatim) > budget:
+        verbatim = verbatim[:max(budget - 1, 0)] + "…"
+    return head + verbatim + tail + BRIDGE_MARKER
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +213,20 @@ def render_handoff(payload: dict, summary: str, chat_id: str = "", sender_id: st
 
 GATE_BASE_URL = _env("LLM_BASE_URL", "EIGHTSTATE_BASE_URL", "OPENAI_BASE_URL",
                      default="https://api.openai.com/v1")
-GATE_MODEL = _env("GATEKEEPER_MODEL", default="gpt-4o-mini")
+GATE_MODEL = _env("GATEKEEPER_MODEL", "CODEX_MODEL", default="gpt-5.4-mini")
 GATE_MAX_MSG_CHARS = 2000  # cap any single message fed to the gate (bounds cost/latency)
+
+# --- Gatekeeper provider -----------------------------------------------------
+# "openai"  -> standard API key against GATE_BASE_URL (chat.completions).
+# "codex"   -> your ChatGPT subscription via `codex login` OAuth (Responses API).
+# "auto"    -> use codex when ~/.codex/auth.json exists and no API key is set.
+LLM_PROVIDER = _env("LLM_PROVIDER", default="auto").lower()
+CODEX_AUTH_FILE = Path(os.environ.get("CODEX_AUTH_FILE", str(Path.home() / ".codex" / "auth.json")))
+CODEX_BASE_URL = os.environ.get("CODEX_BASE_URL", "https://chatgpt.com/backend-api/codex").rstrip("/")
+CODEX_TOKEN_URL = os.environ.get("CODEX_TOKEN_URL", "https://auth.openai.com/oauth/token")
+CODEX_CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
+# Codex/subscription model for the gate. Override in .env if the default rotates.
+CODEX_MODEL = _env("CODEX_MODEL", "GATEKEEPER_MODEL", default="gpt-5.4-mini")
 
 
 def _gate_system_prompt(owner: str) -> str:
@@ -216,7 +266,7 @@ These are heuristics, not hard rules. Do not pattern-match on the surface and st
 Would {owner} be stuck, miss something that matters, or be genuinely glad you interrupted them, if this message sat unseen until they next picked up their phone themselves? Only notify when the answer is clearly yes. If it is a maybe, the answer is no.
 
 Return ONLY JSON with this exact shape:
-{{"justification": "<one sentence naming the call and the reason>", "take_action": <true|false>, "summary": "<if take_action is true: a tight, actionable summary of the single most important thing -- who it's from, what they need, and any deadline/amount/code/link preserved exactly. If take_action is false: empty string>"}}"""
+{{"justification": "<one sentence naming the call and the reason>", "take_action": <true|false>}}"""
 
 
 GATE_SYSTEM_PROMPT = _gate_system_prompt(OWNER_NAME)
@@ -225,8 +275,187 @@ GATE_SYSTEM_PROMPT = _gate_system_prompt(OWNER_NAME)
 def _gate_client() -> OpenAI:
     key = _env("LLM_API_KEY", "EIGHTSTATE_API_KEY", "OPENAI_API_KEY")
     if not key:
-        raise RuntimeError("LLM_API_KEY (or EIGHTSTATE_API_KEY / OPENAI_API_KEY) must be set")
+        raise GateConfigError("LLM_API_KEY (or EIGHTSTATE_API_KEY / OPENAI_API_KEY) is not set")
     return OpenAI(api_key=key, base_url=GATE_BASE_URL)
+
+
+# ---------------------------------------------------------------------------
+# Codex / ChatGPT-subscription provider (OAuth via `codex login`)
+#
+# Uses the credentials `codex login` writes to ~/.codex/auth.json to call the
+# ChatGPT-subscription backend (Responses API) instead of a billed API key.
+# This is an undocumented endpoint OpenAI tolerates for third-party use; it can
+# change. Access tokens are short-lived JWTs, refreshed here via the OAuth
+# refresh token and written back to auth.json so `codex` stays logged in too.
+# ---------------------------------------------------------------------------
+
+class GateConfigError(Exception):
+    """Auth/config problem with the gatekeeper (missing key, dead OAuth token,
+    missing auth file). Distinct from transient errors so the caller can fail
+    CLOSED and alert the owner via Poke, instead of forwarding ungated."""
+
+
+# Cached access token: avoid re-reading/refreshing on every gate call.
+_codex_cache: dict = {"access_token": None, "exp": 0.0, "account_id": None}
+
+
+def use_codex() -> bool:
+    """Whether the gatekeeper should use the Codex subscription backend."""
+    if LLM_PROVIDER == "codex":
+        return True
+    if LLM_PROVIDER == "openai":
+        return False
+    has_key = bool(_env("LLM_API_KEY", "EIGHTSTATE_API_KEY", "OPENAI_API_KEY"))
+    return CODEX_AUTH_FILE.exists() and not has_key
+
+
+def _jwt_claims(token: str) -> dict:
+    """Decode a JWT payload without verifying (we only read exp / account id)."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode()))
+    except Exception:
+        return {}
+
+
+def _codex_account_id(tokens: dict) -> str:
+    aid = tokens.get("account_id")
+    if aid:
+        return aid
+    claims = _jwt_claims(tokens.get("id_token", "") or tokens.get("access_token", ""))
+    auth = claims.get("https://api.openai.com/auth", {}) or {}
+    return auth.get("chatgpt_account_id") or claims.get("chatgpt_account_id", "") or ""
+
+
+def _codex_refresh(refresh_token: str) -> dict:
+    if not refresh_token:
+        raise GateConfigError("no Codex refresh_token in auth.json -- run `codex login`")
+    try:
+        resp = requests.post(
+            CODEX_TOKEN_URL,
+            json={
+                "client_id": CODEX_CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                # offline_access is required to be issued a fresh refresh token.
+                "scope": "openid profile email offline_access",
+            },
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(f"Codex token endpoint unreachable: {e}") from e
+    if resp.status_code in (400, 401, 403):
+        raise GateConfigError(f"Codex token refresh rejected ({resp.status_code}) -- re-run `codex login`")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write a file atomically (temp in same dir + os.replace) so a concurrent
+    reader (the codex CLI, another bridge run) never sees a half-written file."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _codex_access_token() -> tuple[str, str]:
+    """Return (access_token, account_id), refreshing + persisting if near expiry."""
+    now = time.time()
+    if _codex_cache["access_token"] and now < _codex_cache["exp"] - 120:
+        return _codex_cache["access_token"], _codex_cache["account_id"]
+
+    if not CODEX_AUTH_FILE.exists():
+        raise GateConfigError(f"{CODEX_AUTH_FILE} not found -- run `codex login`")
+    try:
+        data = json.loads(CODEX_AUTH_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise GateConfigError(f"cannot read {CODEX_AUTH_FILE}: {e}") from e
+    tokens = data.get("tokens") or {}
+    access = tokens.get("access_token", "")
+    account_id = _codex_account_id(tokens)
+    exp = float(_jwt_claims(access).get("exp", 0))
+
+    if not access or now >= exp - 120:
+        refreshed = _codex_refresh(tokens.get("refresh_token", ""))
+        access = refreshed.get("access_token", access)
+        if not access:
+            raise GateConfigError("Codex refresh returned no access_token -- re-run `codex login`")
+        if refreshed.get("refresh_token"):
+            tokens["refresh_token"] = refreshed["refresh_token"]
+        if refreshed.get("id_token"):
+            tokens["id_token"] = refreshed["id_token"]
+        tokens["access_token"] = access
+        data["tokens"] = tokens
+        data["last_refresh"] = datetime.now().astimezone().isoformat()
+        try:
+            _atomic_write(CODEX_AUTH_FILE, json.dumps(data, indent=2))
+        except Exception as e:
+            log.warning("Could not persist refreshed Codex token: %s", e)
+        exp = float(_jwt_claims(access).get("exp", now + 3000))
+        account_id = _codex_account_id(tokens) or account_id
+
+    if not account_id:
+        raise GateConfigError("no Codex account id -- re-run `codex login`")
+    _codex_cache.update(access_token=access, exp=exp, account_id=account_id)
+    return access, account_id
+
+
+def _codex_client() -> OpenAI:
+    access, account_id = _codex_access_token()
+    return OpenAI(
+        api_key=access,
+        base_url=CODEX_BASE_URL,
+        default_headers={
+            "chatgpt-account-id": account_id,
+            "OpenAI-Beta": "responses=experimental",
+            "originator": "codex_cli_rs",
+        },
+    )
+
+
+def _loads_json_lenient(text: str) -> dict:
+    """Parse JSON from a model reply that may be fenced or have surrounding prose."""
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text[text.find("\n") + 1:] if "\n" in text else text
+    try:
+        return json.loads(text)
+    except Exception:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def _triage_codex(event_text: str, model: str | None) -> dict:
+    """Run the gate through the Codex subscription (Responses API)."""
+    client = _codex_client()
+    # The Codex backend only serves streamed responses, and its final payload
+    # omits the accumulated output -- so collect the text deltas ourselves.
+    chunks: list[str] = []
+    with client.responses.stream(
+        model=model or CODEX_MODEL,
+        instructions=GATE_SYSTEM_PROMPT,
+        input=[
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": event_text}],
+            }
+        ],
+        store=False,
+    ) as stream:
+        for event in stream:
+            etype = getattr(event, "type", "")
+            if etype == "response.output_text.delta":
+                chunks.append(event.delta)
+            elif etype in ("response.failed", "response.error", "error"):
+                raise RuntimeError(f"Codex stream error event: {etype}")
+    text = "".join(chunks)
+    if not text.strip():
+        raise RuntimeError("Codex returned empty output")
+    return _loads_json_lenient(text)
 
 
 def _gate_clip(text: str) -> str:
@@ -253,32 +482,40 @@ def render_event(platform: str, chat: dict, sender: str, messages: list[dict],
 
 
 def triage(event_text: str, model: str | None = None, client: OpenAI | None = None) -> dict:
-    """Return {'justification', 'take_action', 'summary', 'error'}.
+    """Return {'justification', 'take_action', 'error', 'error_kind'}.
 
-    On any provider/parse error returns error=True with take_action=True; the
-    caller decides how to fail (open for DMs, closed for groups) so a gateway
-    outage cannot spam busy group chats.
+    On error returns error=True and take_action=False (fail CLOSED -- never
+    forward an ungated message). error_kind is 'config' for auth/config problems
+    (so the caller can alert the owner via Poke to re-auth) or 'transient' for
+    network/backend blips.
     """
-    client = client or _gate_client()
     try:
-        resp = client.chat.completions.create(
-            model=model or GATE_MODEL,
-            messages=[
-                {"role": "system", "content": GATE_SYSTEM_PROMPT},
-                {"role": "user", "content": event_text},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-        )
-        data = json.loads(resp.choices[0].message.content)
+        if client is None and use_codex():
+            data = _triage_codex(event_text, model)
+        else:
+            client = client or _gate_client()
+            resp = client.chat.completions.create(
+                model=model or GATE_MODEL,
+                messages=[
+                    {"role": "system", "content": GATE_SYSTEM_PROMPT},
+                    {"role": "user", "content": event_text},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+            data = json.loads(resp.choices[0].message.content)
         return {
             "justification": str(data.get("justification", "")),
             "take_action": bool(data.get("take_action", False)),
-            "summary": str(data.get("summary", "") or ""),
             "error": False,
+            "error_kind": None,
         }
+    except GateConfigError as e:
+        return {"justification": f"gate config error: {e}", "take_action": False,
+                "error": True, "error_kind": "config"}
     except Exception as e:
-        return {"justification": f"gatekeeper error: {e}", "take_action": True, "summary": "", "error": True}
+        return {"justification": f"gatekeeper error: {e}", "take_action": False,
+                "error": True, "error_kind": "transient"}
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +576,11 @@ pending_batches: dict[str, dict] = {}
 # Last time the owner sent a message in a given chat (epoch).
 last_self_activity: dict[str, float] = {}
 
-telegram_client: TelegramClient | None = None
+# Set once at startup after we confirm macOS + Messages + osascript are present.
+_imessage_ready = False
+
+# Telegram transport state (lazy; only used when HANDOFF_TRANSPORT=telegram).
+telegram_client = None
 poke_entity = None
 
 
@@ -733,13 +974,81 @@ def is_poke_chat_manually_active() -> bool:
     return False
 
 
+# AppleScript that sends one message via Messages. Target + message are passed as
+# argv (never interpolated) so the text can't break or inject. Two target modes:
+#   - a chat GUID like "iMessage;-;urn:biz:..." or "iMessage;-;+1555..." -> sends
+#     to that existing thread by id (this is how Apple Messages for Business /
+#     urn:biz chats like the AMB Poke are reached -- they have no participant).
+#   - anything else (a phone number / email) -> resolved as an iMessage participant.
+_APPLESCRIPT_SEND = """
+on run argv
+    set theTarget to item 1 of argv
+    set theMessage to item 2 of argv
+    tell application "Messages"
+        if theTarget starts with "iMessage;" or theTarget starts with "SMS;" then
+            send theMessage to chat id theTarget
+        else
+            set targetService to 1st account whose service type = iMessage
+            set targetBuddy to participant theTarget of targetService
+            send theMessage to targetBuddy
+        end if
+    end tell
+end run
+"""
+
+
+def ensure_imessage_ready() -> None:
+    """Verify we can drive Messages over AppleScript. Raises on any problem."""
+    global _imessage_ready
+    if _imessage_ready:
+        return
+    if sys.platform != "darwin":
+        raise RuntimeError("iMessage handoff requires macOS (Messages + osascript).")
+    if shutil.which("osascript") is None:
+        raise RuntimeError("osascript not found -- is this macOS?")
+    if not POKE_IMESSAGE_HANDLE:
+        raise RuntimeError("POKE_IMESSAGE_HANDLE is empty; set Poke's iMessage number in .env.")
+    _imessage_ready = True
+    log.info("iMessage handoff ready -> Poke at %s", POKE_IMESSAGE_HANDLE)
+
+
+def _imessage_send(handle: str, message: str) -> None:
+    """Send one iMessage via the Messages app. Raises on failure."""
+    proc = subprocess.run(
+        ["osascript", "-", handle, message],
+        input=_APPLESCRIPT_SEND,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"osascript exited {proc.returncode}")
+
+
+async def _send_to_poke_imessage(message: str) -> bool:
+    """Text a handoff to Poke over iMessage, retrying once on a transient failure."""
+    for attempt in (1, 2):
+        try:
+            ensure_imessage_ready()
+            await asyncio.to_thread(_imessage_send, POKE_IMESSAGE_HANDLE, message)
+            return True
+        except Exception as e:
+            log.warning("iMessage send attempt %d failed: %s", attempt, e)
+            if attempt == 2:
+                log.error("Giving up sending to Poke over iMessage")
+                return False
+            await asyncio.sleep(2)
+    return False
+
+
 async def init_telegram():
-    """Connect the Telegram user session used to message Poke."""
+    """Connect the Telegram user session used to message Poke (lazy import)."""
     global telegram_client, poke_entity
     if telegram_client and telegram_client.is_connected() and poke_entity:
         return
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
         raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set")
+    from telethon import TelegramClient  # imported only when Telegram is used
 
     if telegram_client is None:
         telegram_client = TelegramClient(TELEGRAM_SESSION, int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
@@ -753,8 +1062,8 @@ async def init_telegram():
     log.info("Connected to Telegram Poke chat: @%s", POKE_TELEGRAM_USERNAME)
 
 
-async def send_to_poke(message: str) -> bool:
-    """Send a handoff to Poke, reconnecting once if the Telegram link dropped."""
+async def _send_to_poke_telegram(message: str) -> bool:
+    """Send a handoff to Poke on Telegram, reconnecting once if the link dropped."""
     global poke_entity
     for attempt in (1, 2):
         try:
@@ -771,9 +1080,51 @@ async def send_to_poke(message: str) -> bool:
     return False
 
 
+async def ensure_transport_ready() -> None:
+    """Fail fast at startup if the selected handoff transport can't be used."""
+    if HANDOFF_TRANSPORT == "telegram":
+        await init_telegram()
+    else:
+        ensure_imessage_ready()
+
+
+async def send_to_poke(message: str) -> bool:
+    """Hand a message to Poke over the configured transport (iMessage or Telegram)."""
+    if HANDOFF_TRANSPORT == "telegram":
+        return await _send_to_poke_telegram(message)
+    return await _send_to_poke_imessage(message)
+
+
+# Rate-limit "gatekeeper is broken" alerts so a sustained outage pings Poke at
+# most once per interval instead of on every incoming message.
+GATE_ALERT_INTERVAL = 1800  # 30 min
+_last_gate_alert = 0.0
+
+
+async def maybe_alert_gate_broken(reason: str) -> None:
+    """Tell Poke the gate is down so it can prompt the owner to re-auth/fix it.
+
+    Rate-limited; the transport (iMessage/Telegram) is independent of the gate
+    LLM, so this alert still gets through when the gatekeeper is the thing broken.
+    """
+    global _last_gate_alert
+    now = time.time()
+    if now - _last_gate_alert < GATE_ALERT_INTERVAL:
+        return
+    _last_gate_alert = now
+    alert = (
+        f"{HANDOFF_PREFIX} ⚠️ Bridge alert (not a forwarded message): the "
+        f"gatekeeper is failing, so I've PAUSED triaging {OWNER_NAME}'s messages "
+        f"-- nothing is being surfaced right now. Reason: {reason}. Tell {OWNER_NAME} "
+        "to check the bridge -- this usually means re-authenticating (run `codex login`) "
+        "or fixing the LLM key in .env." + BRIDGE_MARKER
+    )
+    if await send_to_poke(alert):
+        log.info("Alerted Poke that the gatekeeper is down.")
+
+
 async def send_batch_to_poke(chat_id: str, chat_info: dict, entries: list[dict]):
     """Triage a per-chat batch; only forward to Poke if it clears the gate."""
-    await init_telegram()
     payload = await asyncio.to_thread(build_poke_payload, chat_id, chat_info, entries)
 
     msgs = payload.get("messages") or [{"sender": payload.get("from"), "text": payload.get("text", "")}]
@@ -795,26 +1146,26 @@ async def send_batch_to_poke(chat_id: str, chat_info: dict, entries: list[dict])
     verdict = await asyncio.to_thread(triage, event_text)
 
     if verdict.get("error"):
-        # Gateway failure: fail open for 1:1 DMs (likely personal), but stay
-        # quiet on groups to avoid blasting a busy chat on an outage.
-        if payload.get("chat", {}).get("type") == "group":
-            log.warning("Gate ERROR on group %s/%s -- skipping: %s", network, title, verdict["justification"][:120])
-            return
-        log.warning("Gate ERROR on DM %s/%s -- failing open: %s", network, title, verdict["justification"][:120])
-    elif not verdict["take_action"]:
+        # Fail CLOSED -- never forward an ungated message. On a config/auth error
+        # (the dominant Codex failure mode), alert the owner via Poke to re-auth.
+        if verdict.get("error_kind") == "config":
+            log.error("Gate CONFIG error -- pausing triage: %s", verdict["justification"][:160])
+            await maybe_alert_gate_broken(verdict["justification"])
+        else:
+            log.warning("Gate transient error on %s/%s -- skipping: %s",
+                        network, title, verdict["justification"][:120])
+        return
+    if not verdict["take_action"]:
         log.info("Gate SKIP: %s/%s from %s -- %s", network, title, sender, verdict["justification"][:100])
         return
 
     first = entries[0] if entries else {}
     sender_id = first.get("senderID") or first.get("sender", {}).get("id", "")
-    message = render_handoff(
-        payload, verdict["summary"] or msgs[-1].get("text", ""),
-        chat_id=chat_id, sender_id=sender_id,
-    )
+    message = render_handoff(payload, chat_id=chat_id, sender_id=sender_id)
 
     if await send_to_poke(message):
         log.info(
-            "-> Poke notified (gate PASS): %s/%s from %s (%d msg%s)",
+            "-> Handoff dispatched to Poke (gate PASS): %s/%s from %s (%d msg%s)",
             network, title, sender, len(entries), "" if len(entries) == 1 else "s",
         )
 
@@ -1004,10 +1355,23 @@ def preflight_config() -> list[str]:
     problems = []
     if not BEEPER_TOKEN:
         problems.append("BEEPER_TOKEN is not set (Beeper Desktop -> Settings -> Developer).")
-    if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
-        problems.append("TELEGRAM_API_ID / TELEGRAM_API_HASH are not set (get them at https://my.telegram.org).")
-    if not _env("LLM_API_KEY", "EIGHTSTATE_API_KEY", "OPENAI_API_KEY"):
-        problems.append("LLM_API_KEY is not set (your OpenAI-compatible provider key).")
+    if HANDOFF_TRANSPORT == "telegram":
+        if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
+            problems.append("Telegram transport: TELEGRAM_API_ID / TELEGRAM_API_HASH not set (https://my.telegram.org).")
+    elif HANDOFF_TRANSPORT == "imessage":
+        if sys.platform != "darwin":
+            problems.append("iMessage transport requires macOS (Messages app + osascript).")
+        elif shutil.which("osascript") is None:
+            problems.append("osascript not found -- the macOS Messages backend is unavailable.")
+        if not POKE_IMESSAGE_HANDLE:
+            problems.append("POKE_IMESSAGE_HANDLE is not set (Poke's iMessage number/handle).")
+    else:
+        problems.append(f"HANDOFF_TRANSPORT='{HANDOFF_TRANSPORT}' is invalid (use 'imessage' or 'telegram').")
+    if use_codex():
+        if not CODEX_AUTH_FILE.exists():
+            problems.append(f"Codex provider selected but {CODEX_AUTH_FILE} is missing -- run `codex login`.")
+    elif not _env("LLM_API_KEY", "EIGHTSTATE_API_KEY", "OPENAI_API_KEY"):
+        problems.append("No gatekeeper LLM configured -- set LLM_API_KEY, or run `codex login` to use your ChatGPT subscription.")
     return problems
 
 
@@ -1022,7 +1386,13 @@ async def main_async():
         return
     load_seen_messages()
     await asyncio.to_thread(populate_self_ids)
-    await init_telegram()  # fail fast if Telegram isn't logged in
+    await ensure_transport_ready()  # fail fast if the handoff transport isn't usable
+    target = POKE_TELEGRAM_USERNAME if HANDOFF_TRANSPORT == "telegram" else POKE_IMESSAGE_HANDLE
+    log.info("Handoff transport: %s -> Poke (%s)", HANDOFF_TRANSPORT, target)
+    if use_codex():
+        log.info("Gatekeeper: Codex / ChatGPT subscription (model %s)", CODEX_MODEL)
+    else:
+        log.info("Gatekeeper: API key provider %s (model %s)", GATE_BASE_URL, GATE_MODEL)
     try:
         await asyncio.gather(run_forever(), heartbeat_loop())
     finally:
@@ -1031,13 +1401,26 @@ async def main_async():
 
 
 # ---------------------------------------------------------------------------
-# Telegram first-run login (interactive)
+# Self-test + Telegram first-run login
 # ---------------------------------------------------------------------------
+
+def send_test_message():
+    """Send a one-off test handoff to Poke over the configured transport."""
+    msg = (
+        f"{HANDOFF_PREFIX} (bridge self-test) If you can read this, the "
+        f"Beeper->Poke {HANDOFF_TRANSPORT} handoff is working. -- bridge for {OWNER_NAME}"
+        + BRIDGE_MARKER
+    )
+    ok = asyncio.run(send_to_poke(msg))
+    target = POKE_TELEGRAM_USERNAME if HANDOFF_TRANSPORT == "telegram" else POKE_IMESSAGE_HANDLE
+    print(f"Test handoff to Poke ({HANDOFF_TRANSPORT} -> {target}): {'sent' if ok else 'FAILED'}.")
+
 
 async def login_telegram():
     """Interactive one-time Telegram login to create the session file."""
     if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
         raise SystemExit("Set TELEGRAM_API_ID and TELEGRAM_API_HASH in .env first.")
+    from telethon import TelegramClient
     client = TelegramClient(TELEGRAM_SESSION, int(TELEGRAM_API_ID), TELEGRAM_API_HASH)
     await client.start()  # prompts for phone number + login code on the console
     me = await client.get_me()
@@ -1053,7 +1436,21 @@ async def login_telegram():
 
 if __name__ == "__main__":
     if "--login" in sys.argv:
-        asyncio.run(login_telegram())
+        if HANDOFF_TRANSPORT == "telegram":
+            asyncio.run(login_telegram())
+        else:
+            print("No login needed -- the iMessage transport texts Poke through the macOS Messages app.")
+            print("Make sure Messages is signed in to iMessage, then run: python bridge.py")
+    elif "--test" in sys.argv:
+        send_test_message()
+    elif "--gate-test" in sys.argv:
+        provider = "Codex subscription" if use_codex() else f"API key ({GATE_BASE_URL})"
+        sample = (
+            "Platform: WhatsApp\nChat: Mum (single)\nFrom: Mum\n\n"
+            "New message(s) to triage:\n  Mum: are you still coming to dinner at 7? need to know now to book the table"
+        )
+        print(f"Gatekeeper provider: {provider}")
+        print(json.dumps(triage(sample), indent=2))
     else:
         problems = preflight_config()
         if problems:

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>co.eightstate.poke-tunnel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/npx</string>
+        <string>poke@latest</string>
+        <string>tunnel</string>
+        <string>http://localhost:23373/v0/mcp</string>
+        <string>-n</string>
+        <string>Beeper Desktop</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/alex/Developer/beeper-poke-bridge</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer relaunch if npx/network hiccups -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/alex/Developer/beeper-poke-bridge/tunnel.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/alex/Developer/beeper-poke-bridge/tunnel.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- npx/poke read credentials and cache under HOME. -->
+        <key>HOME</key>
+        <string>/Users/alex</string>
+    </dict>
+</dict>
+</plist>
