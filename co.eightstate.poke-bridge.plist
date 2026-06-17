@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>co.eightstate.poke-bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/alex/Developer/beeper-poke-bridge/.venv/bin/python</string>
+        <string>/Users/alex/Developer/beeper-poke-bridge/bridge.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/alex/Developer/beeper-poke-bridge</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer relaunch if it crash-loops (e.g. missing creds) -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/alex/Developer/beeper-poke-bridge/bridge.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/alex/Developer/beeper-poke-bridge/bridge.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- Path.home() (Codex auth.json) depends on HOME being set. -->
+        <key>HOME</key>
+        <string>/Users/alex</string>
+    </dict>
+</dict>
+</plist>
