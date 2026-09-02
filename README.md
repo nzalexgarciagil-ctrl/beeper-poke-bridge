@@ -4,15 +4,15 @@
   <img src="banner.jpeg" alt="Poke × Beeper" width="520">
 </p>
 
-**Let your [Poke](https://poke.com) assistant handle every messaging app: WhatsApp,
-Instagram, X, Telegram, Discord, Signal, iMessage, and more.** This bridge listens
+Let your [Poke](https://poke.com) assistant handle every messaging app: WhatsApp,
+Instagram, X, Telegram, Discord, Signal, iMessage, and more. This bridge listens
 to every chat in [Beeper](https://www.beeper.com), runs each incoming message
-through a fast LLM **gatekeeper**, and pings Poke only when a message genuinely
+through a fast LLM gatekeeper, and pings Poke only when a message genuinely
 needs your attention, with a heads-up and a draft reply in your voice.
 
-**Silence by default.** The gate stays quiet on banter, memes, group side-chatter,
+Silence by default. The gate stays quiet on banter, memes, group side-chatter,
 and cold DMs. It surfaces a landlord chasing rent, or a friend texting "I'm
-outside, where are you?".
+outside, where are you?"
 
 ```
 Beeper Desktop  --ws-->  bridge.py  -->  gatekeeper (LLM triage)  --pass-->  iMessage/Telegram > Poke bot
@@ -25,58 +25,64 @@ Beeper Desktop  --ws-->  bridge.py  -->  gatekeeper (LLM triage)  --pass-->  iMe
 
 1. **Listen.** `bridge.py` subscribes to Beeper Desktop's local WebSocket API
    for all chats.
-2. **Cheap filters.** Drops your own messages, reactions, call notices,
-   emoji-only bursts, and chats you're already actively replying in. Rapid-fire
-   messages from one chat are debounced into a single event.
+2. **Cheap filters.** Drops your own messages, reactions, full-message call
+   notices, emoji-only bursts, and messages in chats you're already actively
+   replying in. Rapid-fire messages from one chat are debounced into a single
+   event.
 3. **Gate.** The gatekeeper (in `bridge.py`) asks an LLM one question: *is this
    worth interrupting the owner right now?* Adapted from Poke's own email-triage
    prompt. Returns JSON `{justification, take_action}`.
 4. **Handoff.** On a pass, the bridge texts Poke (iMessage by default, Telegram
    optional) with a heads-up and asks Poke to read the chat (via its Beeper MCP)
-   and draft a reply in your voice. **Draft only: the bridge never sends
-   messages to anyone but the Poke bot.**
+   and draft a reply in your voice. Draft only: the bridge never sends messages
+   to anyone but the Poke bot.
 
 ## Requirements
 
-- **Beeper Desktop**, running, with the local Desktop API enabled (Settings →
-  Developer). The bridge talks to `localhost:23373`.
+- **Beeper Desktop**, running, with the local Desktop API enabled (Settings,
+  then Developer). The bridge talks to `localhost:23373`.
 - A **handoff transport** to reach Poke: the macOS **Messages** app (default,
-  no login), or a **Telegram** account + API ID/hash from <https://my.telegram.org>.
-- An **OpenAI-compatible LLM endpoint** + key (OpenAI, OpenRouter, a local
-  server, anything that speaks the chat-completions API) -- or a ChatGPT
-  subscription via `codex login`.
-- **Python 3.10+**. [`uv`](https://docs.astral.sh/uv/) recommended (handles deps
-  automatically); plain `pip` works too.
+  no login), or a **Telegram** account plus an API ID/hash from
+  <https://my.telegram.org>.
+- A **gatekeeper LLM**: an OpenAI-compatible endpoint and key (OpenAI,
+  OpenRouter, a local server, anything that speaks the chat-completions API),
+  or a ChatGPT subscription via `codex login` with no API key.
+- **Python 3.10+**. [`uv`](https://docs.astral.sh/uv/) recommended because it
+  handles dependencies automatically. A plain venv with `pip` works too.
 
 ## Quickstart
 
-**One script does everything.** It asks for your credentials, installs
-dependencies, logs you into Telegram, points you at the tunnel, and (optionally)
-sets up always-on running and starts the bridge.
+`configure.py` does everything: it asks for your credentials, installs
+dependencies, runs the one-time Telegram login if you picked that transport,
+and can set up always-on running and start the bridge.
 
 ```bash
 git clone <your-fork> beeper-poke-bridge && cd beeper-poke-bridge
 python configure.py        # or: uv run python configure.py
 ```
 
-That's it. Answer the prompts. `configure.py` uses only the standard library,
-so it runs before anything is installed and shells out to [`uv`](https://docs.astral.sh/uv/)
-(or a local venv) for the rest. It walks you through, each step skippable:
+Answer the prompts. `configure.py` uses only the standard library, so it runs
+before anything is installed, and shells out to
+[`uv`](https://docs.astral.sh/uv/) (or a local venv it creates) for the rest.
+Each step is skippable and safe to repeat:
 
-1. **Credentials** → writes `.env`
-2. **Dependencies** → installed via uv (or a venv it creates)
-3. **Telegram login** → one-time phone + code
-4. **Tunnel** → the one-line Poke CLI command so Poke can read your chats
-5. **Always-on** → installs the supervisor (Windows task; templates for Linux/macOS)
-6. **Start** → launches the bridge
+1. **Credentials**, written to `.env`
+2. **Dependencies**, installed via uv or a local venv
+3. **Transport setup**: a one-time Telegram login, or an iMessage test send
+4. **Tunnel**: the one-line Poke CLI command so Poke can read your chats
+5. **Always-on**: the Windows watchdog task, or templates for Linux and macOS
+6. **Start**: launches the bridge
 
 When it's running you'll see `Connected to Beeper WebSocket` and `Subscribed to
 all chats`. Re-run `configure.py` any time; existing values are offered as
-defaults and every step is safe to repeat.
+defaults.
 
-> Where to get each credential: **Beeper token** → Beeper Desktop → Settings →
-> Developer. **Telegram API id/hash** → <https://my.telegram.org> → API
-> development tools. **LLM key** → your OpenAI-compatible provider.
+Where to get each credential:
+
+- **Beeper token**: Beeper Desktop, Settings, then Developer.
+- **Telegram API ID and hash**: <https://my.telegram.org>, API development tools.
+- **LLM key**: your OpenAI-compatible provider, or leave it blank and run
+  `codex login` to use your ChatGPT subscription.
 
 ## Setup (manual)
 
@@ -84,15 +90,16 @@ To edit the config by hand, copy the template and fill it in:
 
 ```bash
 cp .env.example .env          # then edit it (see Configuration below)
-uv run --with-requirements requirements.txt python bridge.py --login
+uv run --with-requirements requirements.txt python bridge.py --login   # telegram transport only
 uv run --with-requirements requirements.txt python bridge.py
 ```
 
-Everything works the same with a plain `pip install -r requirements.txt` in a venv.
+Everything works the same with a plain `pip install -r requirements.txt` in a
+venv.
 
 ### Letting Poke read your chats (the tunnel)
 
-The bridge only *notifies* Poke. For Poke to read the chat and draft a reply, it
+The bridge only notifies Poke. For Poke to read the chat and draft a reply, it
 needs your Beeper MCP. The official way is the **Poke CLI tunnel**
 ([Poke docs](https://poke.com/docs/mcp-servers)): no domain, no Cloudflare.
 
@@ -102,12 +109,12 @@ needs your Beeper MCP. The official way is the **Poke CLI tunnel**
 npx poke@latest tunnel http://localhost:23373/v0/mcp -n "Beeper Desktop"
 ```
 
-Leave it running alongside the bridge. The tunnel stays active until you stop it,
-and Poke handles auth automatically (DCR). Without it the bridge still triggers
-Poke, but Poke can't read history to draft in-voice replies. To keep it windowless
-and persistent on Windows, supervise it like the bridge (see *Keeping it
-running*). For a permanent public endpoint, run your own Cloudflare named tunnel
-to the same local URL (advanced; put Cloudflare Access in front of it).
+Leave it running alongside the bridge. The tunnel stays active until you stop
+it, and Poke handles auth automatically (DCR). Without it the bridge still
+triggers Poke, but Poke can't read history to draft in-voice replies. To keep
+it windowless and persistent, supervise it like the bridge (see *Keeping it
+running*). For a permanent public endpoint, run your own Cloudflare named
+tunnel to the same local URL and put Cloudflare Access in front of it.
 
 ## Configuration
 
@@ -131,23 +138,23 @@ All config lives in `.env` (see `.env.example` for the annotated template):
 
 ### Finding `POKE_BEEPER_CHAT_ID`
 
-Open your Telegram chat with the Poke bot inside Beeper and copy its chat/room
-ID (looks like `!xxxxxxxxxxxx:beeper.local`). This lets the bridge (a) ignore
-Poke's own messages and (b) detect when you're manually talking to Poke and hold
-notifications until that conversation goes quiet.
+Open your chat with Poke inside Beeper and copy its chat/room ID (looks like
+`!xxxxxxxxxxxx:beeper.local`). This lets the bridge ignore Poke's own messages,
+and hold notifications while you're manually talking to Poke, until the
+conversation goes quiet.
 
 ## Keeping it running
 
 The bridge auto-reconnects to Beeper, but if the **process** is killed (sleep,
 logoff, OOM), something has to restart it. It writes `.bridge-heartbeat` every
-30s and holds a single-instance lock (`.bridge.lock`), so redundant launches from
-a supervisor are harmless. Pick your platform:
+30 seconds and holds a single-instance lock (`.bridge.lock`), so redundant
+launches from a supervisor are harmless.
 
 **Windows.** `watchdog.ps1` both launches the bridge (windowless) and keeps it
-alive; `run-watchdog-hidden.vbs` runs the watchdog itself with no console window.
-Task Scheduler's own restart-on-failure can't help here, because the bridge runs
-detached in the background and the task "completes" instantly, so the watchdog
-polls the heartbeat instead. Register it to run every minute:
+alive; `run-watchdog-hidden.vbs` runs the watchdog itself with no console
+window. Task Scheduler's own restart-on-failure can't help here, because the
+bridge runs detached in the background and the task completes instantly, so the
+watchdog polls the heartbeat instead. Register it to run every minute:
 
 ```bat
 schtasks /Create /TN PokeBridge ^
@@ -167,7 +174,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\uv","$env:APPDATA\uv"
 
 ```ini
 [Unit]
-Description=Beeper -> Poke bridge
+Description=Beeper to Poke bridge
 After=network-online.target
 [Service]
 WorkingDirectory=%h/beeper-poke-bridge
@@ -178,31 +185,35 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-**macOS.** A launchd agent with `<key>KeepAlive</key><true/>` pointing
-`ProgramArguments` at your venv's `python bridge.py`, with `RunAtLoad` true.
+**macOS.** Ready-made launchd agents are in this repo: `co.eightstate.poke-bridge.plist`
+for the bridge and `co.eightstate.poke-tunnel.plist` for the Poke tunnel. Edit
+the `/Users/alex/...` paths to your home directory, copy both to
+`~/Library/LaunchAgents`, then run `launchctl bootstrap gui/$UID <plist>` for
+each. Both use `KeepAlive`, so launchd restarts them if they die.
 
 ## Tuning the gate
 
 Behaviour is almost entirely in the gate system prompt: the `_gate_system_prompt`
 function near the top of `bridge.py`. Edit it to change what earns an
-interruption: who counts as the owner, how high the bar is, what always passes or
-always stays silent.
+interruption: who counts as the owner, how high the bar is, what always passes
+or always stays silent.
 
 ## Privacy & safety
 
 - **Use a read-only Beeper token.** The bridge only reads from Beeper; it never
   sends through it. Scope `BEEPER_TOKEN` to read-only. A read-write token that
-  leaks, or an MCP you expose publicly, could send messages as you. Keep the same
-  read-only rule for whatever you hand Poke over the tunnel.
-- **Your messages are sent to your LLM provider.** Every message that passes the
-  cheap filters is POSTed to `LLM_BASE_URL` for triage. Point it at a provider
-  (or local model) you control. Nothing is sent anywhere else.
-- The bridge's **only outbound action** is messaging the Poke bot on Telegram.
-  It never replies to third parties: Poke's Beeper access is read-only and drafts
-  are for you to copy-paste.
-- On an LLM outage the gate **fails closed** -- nothing is forwarded ungated --
-  and the bridge alerts Poke (rate-limited to once per 30 min) so you know
-  triage has paused. Transient network blips just skip that message.
+  leaks, or an MCP you expose publicly, could send messages as you. Keep the
+  same read-only rule for whatever you hand Poke over the tunnel.
+- **Your messages are sent to your LLM provider.** Every message that passes
+  the cheap filters is POSTed to `LLM_BASE_URL` for triage. Point it at a
+  provider (or local model) you control. Nothing is sent anywhere else.
+- The bridge's **only outbound action** is messaging the Poke bot (over
+  iMessage or Telegram, whichever transport you configured). It never replies
+  to third parties: Poke's Beeper access is read-only and drafts are for you
+  to copy-paste.
+- On an LLM outage the gate **fails closed**. Nothing is forwarded ungated. The
+  bridge alerts Poke (rate-limited to once per 30 minutes) so you know triage
+  has paused. Transient network blips just skip that message.
 - **Never commit `.env` or `*.session`.** The session file is a logged-in
   Telegram session. Treat it like a password. `.gitignore` already covers both.
 
@@ -211,9 +222,10 @@ always stays silent.
 | File | Purpose |
 |---|---|
 | `bridge.py` | The whole bridge: Beeper listener, filters, debounce, single-instance lock, the LLM gate, and the iMessage/Telegram handoff. |
-| `configure.py` | One-shot installer: credentials, dependencies, Telegram login, tunnel, always-on supervisor, and start. |
-| `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale. |
+| `configure.py` | One-shot installer: credentials, dependencies, transport login or test, tunnel, always-on supervisor, and start. |
+| `watchdog.ps1` | Windows: starts the bridge windowless and relaunches it if the heartbeat goes stale. |
 | `run-watchdog-hidden.vbs` | Windows: runs the watchdog with no console window (used by the scheduled task). |
+| `co.eightstate.poke-bridge.plist` / `co.eightstate.poke-tunnel.plist` | macOS launchd agents for the bridge and the Poke tunnel. |
 | `requirements.txt` / `.env.example` | Dependencies and the config template. |
 
 ## License

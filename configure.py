@@ -142,7 +142,7 @@ def collect_credentials() -> None:
     existing = load_existing()
 
     default_t = existing.get("HANDOFF_TRANSPORT", "imessage").lower()
-    print("\n  Handoff transport -- how the bridge reaches Poke:")
+    print("\n  Handoff transport, i.e. how the bridge reaches Poke:")
     print("    1) imessage  (macOS Messages app, no login)")
     print("    2) telegram  (messages the Poke bot)")
     ans = input(f"  Choose [1/2] (default {'2' if default_t == 'telegram' else '1'}): ").strip()
@@ -163,13 +163,13 @@ def _check_provider_coherence(values: dict) -> None:
     has_key = bool(values.get("LLM_API_KEY"))
     has_codex = (Path.home() / ".codex" / "auth.json").exists()
     if provider == "openai" and not has_key:
-        print("  WARNING: LLM_PROVIDER=openai but no LLM_API_KEY -- the gate will fail. "
-              "Set a key, or use provider 'codex'/'auto'.")
+        print("  WARNING: LLM_PROVIDER=openai but no LLM_API_KEY, so the gate will fail. ")
+        print("  Set a key, or use provider 'codex'/'auto'.")
     elif provider == "codex" and not has_codex:
-        print("  WARNING: LLM_PROVIDER=codex but ~/.codex/auth.json is missing -- run `codex login`.")
+        print("  WARNING: LLM_PROVIDER=codex but ~/.codex/auth.json is missing. Run `codex login`.")
     elif provider == "auto" and not has_key and not has_codex:
-        print("  WARNING: provider 'auto' but no LLM_API_KEY and no ~/.codex/auth.json -- "
-              "run `codex login` or set a key, or the gate can't run.")
+        print("  WARNING: provider 'auto' but no LLM_API_KEY and no ~/.codex/auth.json, ")
+        print("  so the gate can't run. Run `codex login` or set a key.")
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ def resolve_runner() -> list[str]:
     venv = HERE / ".venv"
     py = venv / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
     if not py.exists():
-        print("  uv not found; creating a local .venv and installing dependencies…")
+        print("  uv not found; creating a local .venv and installing dependencies. This takes a minute.")
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
         subprocess.run([str(py), "-m", "pip", "install", "-q", "-r", "requirements.txt"],
                        cwd=HERE, check=True)
@@ -194,7 +194,7 @@ def resolve_runner() -> list[str]:
 
 def ensure_dependencies(runner: list[str]) -> bool:
     section("2. Dependencies")
-    print("  Resolving/installing dependencies (first run can take a minute)…")
+    print("  Resolving and installing dependencies. The first run can take a minute.")
     check = subprocess.run(
         runner + ["-c", "import telethon, openai, websockets, requests, dotenv; print('ok')"],
         cwd=HERE,
@@ -222,10 +222,10 @@ def transport_setup(runner: list[str]) -> None:
     else:
         section("3. iMessage handoff")
         if sys.platform != "darwin":
-            print("  WARNING: the iMessage handoff needs macOS with Messages signed in to")
-            print("  iMessage. This machine isn't macOS, so the bridge can't text Poke here.")
+            print("  WARNING: the iMessage handoff needs macOS with Messages signed in to iMessage.")
+            print("  This machine isn't macOS, so the bridge can't text Poke here.")
             return
-        print("  The bridge texts Poke through the macOS Messages app -- no login needed.")
+        print("  The bridge texts Poke through the macOS Messages app, so no login is needed.")
         print("  Make sure Messages is open and signed in to iMessage.")
         if not yn("  Send a test handoff to Poke now?"):
             print("  Skipped. Test later:  " + " ".join(runner) + " bridge.py --test")
@@ -260,7 +260,7 @@ def install_always_on(runner: list[str]) -> None:
         print("  Registers a per-minute Task Scheduler job that starts the bridge at")
         print("  logon and relaunches it if it dies (via watchdog.ps1).")
         if not yn("  Install the Windows watchdog task now?"):
-            print("  Skipped. See README -> Keeping it running.")
+            print("  Skipped. See README, section 'Keeping it running'.")
             return
         user = os.environ.get("USERNAME", "")
         cmd = [
@@ -276,9 +276,9 @@ def install_always_on(runner: list[str]) -> None:
         else:
             print("  Task registration failed (see above). You can register it manually per the README.")
     else:
-        print("  On Linux/macOS use your init system (no extra files needed):")
+        print("  On Linux/macOS use your init system:")
         print("    - Linux: a systemd user unit with Restart=always")
-        print("    - macOS: a launchd agent with KeepAlive")
+        print("    - macOS: the ready-made launchd plists in this repo (KeepAlive)")
         print("  The README 'Keeping it running' section has copy-paste templates.")
 
 
@@ -307,7 +307,7 @@ def start_now(runner: list[str]) -> None:
 
 def main() -> int:
     print("\n=== Beeper -> Poke bridge setup ===")
-    print("Press Enter to accept a [default]. Ctrl+C to stop any time.\n")
+    print("Press Enter to accept a [default]. Ctrl+C stops any time.\n")
 
     collect_credentials()
 
@@ -321,7 +321,7 @@ def main() -> int:
     start_now(runner)
 
     print("\nDone. The bridge stays silent until a message clears the gate.")
-    print("Logs: bridge.log   |   Config: .env   |   Docs: README.md\n")
+    print("Logs: bridge.log. Config: .env. Docs: README.md\n")
     return 0
 
 
