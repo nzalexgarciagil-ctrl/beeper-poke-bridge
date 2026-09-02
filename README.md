@@ -173,8 +173,18 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-**macOS.** A launchd agent with `<key>KeepAlive</key><true/>` pointing
-`ProgramArguments` at your venv's `python bridge.py`, with `RunAtLoad` true.
+**macOS.** Run `python configure.py` and approve the launchd installation step.
+The installer generates per-user agents from the current checkout and executable
+paths, writes them to `~/Library/LaunchAgents/`, and loads them with `launchctl`.
+If `npx` is available, it installs an agent for the Poke tunnel as well. Logs are
+written under `~/Library/Logs/BeeperPokeBridge/`.
+
+To unload the generated agents:
+
+```bash
+launchctl bootout "gui/$(id -u)/co.eightstate.poke-bridge"
+launchctl bootout "gui/$(id -u)/co.eightstate.poke-tunnel"
+```
 
 ## Tuning the gate
 
@@ -205,7 +215,8 @@ always stays silent.
 | File | Purpose |
 |---|---|
 | `bridge.py` | The whole bridge: Beeper listener, filters, debounce, single-instance lock, the LLM gate, and the Telegram handoff. |
-| `configure.py` | One-shot installer: credentials, dependencies, Telegram login, tunnel, always-on supervisor, and start. |
+| `configure.py` | One-shot installer: credentials, dependencies, Telegram login, tunnel, portable macOS launchd agents, always-on supervisor, and start. |
+| `tests/` | Standard-library regression tests for generated service configuration. |
 | `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale. |
 | `run-watchdog-hidden.vbs` | Windows: runs the watchdog with no console window (used by the scheduled task). |
 | `requirements.txt` / `.env.example` | Dependencies and the config template. |

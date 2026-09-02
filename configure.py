@@ -17,6 +17,7 @@ installed; it shells out to `uv` (or a local venv) for everything that needs the
 from __future__ import annotations
 
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -253,6 +254,132 @@ def tunnel_setup() -> None:
         print("  Run that command in a separate terminal when you're ready.")
 
 
+def _launchd_agent(
+    label: str,
+    arguments: list[str],
+    working_directory: Path,
+    home: Path,
+    path_value: str,
+) -> dict:
+    log_dir = home / "Library" / "Logs" / "BeeperPokeBridge"
+    log_name = label.rsplit(".", 1)[-1]
+    return {
+        "Label": label,
+        "ProgramArguments": arguments,
+        "WorkingDirectory": str(working_directory),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 30,
+        "StandardOutPath": str(log_dir / f"{log_name}.out.log"),
+        "StandardErrorPath": str(log_dir / f"{log_name}.err.log"),
+        "EnvironmentVariables": {
+            "HOME": str(home),
+            "PATH": path_value,
+        },
+    }
+
+
+def _launchd_agent_specs(
+    runner: list[str],
+    npx_path: str | None,
+    working_directory: Path = HERE,
+    home: Path | None = None,
+) -> list[tuple[str, dict]]:
+    home = home or Path.home()
+    path_dirs = [str(Path(runner[0]).parent)]
+    if npx_path:
+        path_dirs.append(str(Path(npx_path).parent))
+    path_dirs.extend([
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ])
+    path_value = ":".join(dict.fromkeys(path_dirs))
+    specs = [
+        (
+            "co.eightstate.poke-bridge",
+            _launchd_agent(
+                "co.eightstate.poke-bridge",
+                runner + [str(working_directory / "bridge.py")],
+                working_directory,
+                home,
+                path_value,
+            ),
+        )
+    ]
+    if npx_path:
+        specs.append(
+            (
+                "co.eightstate.poke-tunnel",
+                _launchd_agent(
+                    "co.eightstate.poke-tunnel",
+                    [
+                        npx_path,
+                        "poke@latest",
+                        "tunnel",
+                        "http://localhost:23373/v0/mcp",
+                        "-n",
+                        "Beeper Desktop",
+                    ],
+                    working_directory,
+                    home,
+                    path_value,
+                ),
+            )
+        )
+    return specs
+
+
+def install_launchd_agents(runner: list[str]) -> bool:
+    executable = shutil.which(runner[0])
+    if not executable and Path(runner[0]).is_absolute():
+        executable = runner[0]
+    if not executable:
+        print(f"  Cannot install launchd agent: executable not found: {runner[0]}")
+        return False
+
+    resolved_runner = [executable, *runner[1:]]
+    npx_path = shutil.which("npx")
+    home = Path.home()
+    agent_dir = home / "Library" / "LaunchAgents"
+    log_dir = home / "Library" / "Logs" / "BeeperPokeBridge"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    domain = f"gui/{os.getuid()}"
+
+    installed = []
+    for label, data in _launchd_agent_specs(resolved_runner, npx_path, HERE, home):
+        destination = agent_dir / f"{label}.plist"
+        with destination.open("wb") as file:
+            plistlib.dump(data, file, fmt=plistlib.FMT_XML, sort_keys=False)
+        destination.chmod(0o644)
+
+        service = f"{domain}/{label}"
+        subprocess.run(
+            ["launchctl", "bootout", service],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        result = subprocess.run(["launchctl", "bootstrap", domain, str(destination)])
+        if result.returncode != 0:
+            print(f"  Failed to load {destination}")
+            return False
+        installed.append(destination)
+
+    if not npx_path:
+        print(
+            "  npx was not found; installed the bridge agent but skipped "
+            "the Poke tunnel agent."
+        )
+    print("  Installed launchd agents:")
+    for destination in installed:
+        print(f"    {destination}")
+    return True
+
+
 def install_always_on(runner: list[str]) -> None:
     section("5. Keep it running (auto-start + auto-restart)")
     if IS_WINDOWS:
@@ -275,11 +402,15 @@ def install_always_on(runner: list[str]) -> None:
             print("  Installed task 'PokeBridge'. It will keep the bridge alive.")
         else:
             print("  Task registration failed (see above). You can register it manually per the README.")
+    elif sys.platform == "darwin":
+        print("  Generates launchd agents using this checkout's paths.")
+        if not yn("  Install the bridge and Poke tunnel launchd agents now?"):
+            print("  Skipped. Re-run configure.py later to install them.")
+            return
+        install_launchd_agents(runner)
     else:
-        print("  On Linux/macOS use your init system (no extra files needed):")
-        print("    - Linux: a systemd user unit with Restart=always")
-        print("    - macOS: a launchd agent with KeepAlive")
-        print("  The README 'Keeping it running' section has copy-paste templates.")
+        print("  On Linux use a systemd user unit with Restart=always.")
+        print("  The README 'Keeping it running' section has a copy-paste template.")
 
 
 def start_now(runner: list[str]) -> None:
