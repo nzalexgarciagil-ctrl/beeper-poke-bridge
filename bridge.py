@@ -44,7 +44,7 @@ import sys
 import time
 
 import requests
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 import websockets
 
 from dotenv import load_dotenv
@@ -97,6 +97,10 @@ POKE_TELEGRAM_USERNAME = os.environ.get("POKE_TELEGRAM_USERNAME", "interaction_p
 # 4000 also stays under Telegram's 4096 hard limit when that transport is used.
 MAX_HANDOFF_MESSAGE = int(os.environ.get("MAX_HANDOFF_MESSAGE", "4000"))
 CONTEXT_LOOKBACK_SECONDS = 15 * 60
+
+# Cap how many messages from one chat feed a single gate call, so a firehose
+# group can't produce an unbounded prompt (cost/latency). Newest are kept.
+MAX_BATCH_ENTRIES = int(os.environ.get("MAX_BATCH_ENTRIES", "20"))
 
 # Reconnect delay range (exponential backoff)
 RECONNECT_MIN = 2
@@ -494,16 +498,23 @@ def triage(event_text: str, model: str | None = None, client: OpenAI | None = No
             data = _triage_codex(event_text, model)
         else:
             client = client or _gate_client()
-            resp = client.chat.completions.create(
-                model=model or GATE_MODEL,
-                messages=[
+            kwargs = {
+                "model": model or GATE_MODEL,
+                "messages": [
                     {"role": "system", "content": GATE_SYSTEM_PROMPT},
                     {"role": "user", "content": event_text},
                 ],
-                response_format={"type": "json_object"},
-                temperature=0,
-            )
-            data = json.loads(resp.choices[0].message.content)
+                "temperature": 0,
+            }
+            try:
+                resp = client.chat.completions.create(
+                    response_format={"type": "json_object"}, **kwargs
+                )
+            except BadRequestError:
+                # Some OpenAI-compatible providers reject response_format; the
+                # gate prompt already demands bare JSON, so retry without it.
+                resp = client.chat.completions.create(**kwargs)
+            data = _loads_json_lenient(resp.choices[0].message.content)
         return {
             "justification": str(data.get("justification", "")),
             "take_action": bool(data.get("take_action", False)),
@@ -838,10 +849,16 @@ def is_placeholder_text(text: str, entry: dict) -> bool:
 
 def is_noise_text(text: str) -> bool:
     """Drop non-actionable system notices that should never trigger a Poke ping."""
-    low = text.strip().lower()
-    # Call/system notices Beeper renders like "(X started a call. ...)". Require
-    # a notice verb so we don't drop real messages that merely contain "call".
-    if re.search(r"\b(started|missed|declined|ended)\b[^)]*\bcall\b", low):
+    stripped = text.strip()
+    low = stripped.lower().rstrip(".! ")
+    # Beeper renders call notices like "(Alex started a call)" or "Call ended".
+    # Only drop full-message system notices: a real message that merely mentions
+    # a call ("sorry i missed your call") must still reach the gate.
+    if re.fullmatch(r"\([^)]{0,160}\)", stripped) and re.search(
+        r"\b(started|missed|declined|ended)\b[^)]*\bcall\b", low
+    ):
+        return True
+    if re.fullmatch(r"(missed|declined)\s+(a\s+)?call|call\s+(ended|started)", low):
         return True
     return False
 
@@ -1125,6 +1142,9 @@ async def maybe_alert_gate_broken(reason: str) -> None:
 
 async def send_batch_to_poke(chat_id: str, chat_info: dict, entries: list[dict]):
     """Triage a per-chat batch; only forward to Poke if it clears the gate."""
+    # Bound the prompt: a firehose group can queue hundreds of entries inside one
+    # debounce window, and the gate is a single fixed-size call. Keep the newest.
+    entries = entries[-MAX_BATCH_ENTRIES:]
     payload = await asyncio.to_thread(build_poke_payload, chat_id, chat_info, entries)
 
     msgs = payload.get("messages") or [{"sender": payload.get("from"), "text": payload.get("text", "")}]
@@ -1355,6 +1375,10 @@ def preflight_config() -> list[str]:
     problems = []
     if not BEEPER_TOKEN:
         problems.append("BEEPER_TOKEN is not set (Beeper Desktop -> Settings -> Developer).")
+    if LLM_PROVIDER not in ("auto", "codex", "openai"):
+        problems.append(
+            f"LLM_PROVIDER='{LLM_PROVIDER}' is invalid (use 'auto', 'codex', or 'openai')."
+        )
     if HANDOFF_TRANSPORT == "telegram":
         if not TELEGRAM_API_ID or not TELEGRAM_API_HASH:
             problems.append("Telegram transport: TELEGRAM_API_ID / TELEGRAM_API_HASH not set (https://my.telegram.org).")

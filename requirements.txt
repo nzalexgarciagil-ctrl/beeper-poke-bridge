@@ -1,5 +1,8 @@
+# Keep these pinned to versions that actually support the APIs used in bridge.py:
+#   - websockets>=14: the listener passes additional_headers= (added in v14).
+#   - openai>=1.66: the Codex path uses client.responses.stream (GA'd in 1.66).
 requests>=2.31
+openai>=1.66
+websockets>=14.0
 telethon>=1.36  # only needed for HANDOFF_TRANSPORT=telegram
-websockets>=12.0
-openai>=1.40
 python-dotenv>=1.0
