@@ -15,7 +15,7 @@ and cold DMs. It surfaces a landlord chasing rent, or a friend texting "I'm
 outside, where are you?".
 
 ```
-Beeper Desktop  --ws-->  bridge.py  -->  gatekeeper (LLM triage)  --pass-->  Telegram > Poke bot
+Beeper Desktop  --ws-->  bridge.py  -->  gatekeeper (LLM triage)  --pass-->  iMessage/Telegram > Poke bot
    (all chats)           debounce,         high-bar, default-silent           (heads-up +
                          self/own-msg                                         in-voice draft)
                          filtering
@@ -30,20 +30,21 @@ Beeper Desktop  --ws-->  bridge.py  -->  gatekeeper (LLM triage)  --pass-->  Tel
    messages from one chat are debounced into a single event.
 3. **Gate.** The gatekeeper (in `bridge.py`) asks an LLM one question: *is this
    worth interrupting the owner right now?* Adapted from Poke's own email-triage
-   prompt. Returns JSON `{justification, take_action, summary}`.
-4. **Handoff.** On a pass, the bridge messages the Poke bot on Telegram with a
-   heads-up and asks Poke to read the chat (via its Beeper MCP) and draft a
-   reply in your voice. **Draft only: the bridge never sends messages to anyone
-   but the Poke bot.**
+   prompt. Returns JSON `{justification, take_action}`.
+4. **Handoff.** On a pass, the bridge texts Poke (iMessage by default, Telegram
+   optional) with a heads-up and asks Poke to read the chat (via its Beeper MCP)
+   and draft a reply in your voice. **Draft only: the bridge never sends
+   messages to anyone but the Poke bot.**
 
 ## Requirements
 
 - **Beeper Desktop**, running, with the local Desktop API enabled (Settings →
   Developer). The bridge talks to `localhost:23373`.
-- A **Telegram account** (the one you DM the Poke bot from) and a Telegram API
-  ID/hash from <https://my.telegram.org>.
+- A **handoff transport** to reach Poke: the macOS **Messages** app (default,
+  no login), or a **Telegram** account + API ID/hash from <https://my.telegram.org>.
 - An **OpenAI-compatible LLM endpoint** + key (OpenAI, OpenRouter, a local
-  server, anything that speaks the chat-completions API).
+  server, anything that speaks the chat-completions API) -- or a ChatGPT
+  subscription via `codex login`.
 - **Python 3.10+**. [`uv`](https://docs.astral.sh/uv/) recommended (handles deps
   automatically); plain `pip` works too.
 
@@ -116,13 +117,17 @@ All config lives in `.env` (see `.env.example` for the annotated template):
 |---|---|---|
 | `OWNER_NAME` | yes | Who the bridge triages for; injected into the gate prompt. |
 | `BEEPER_TOKEN` | yes | Beeper Desktop API token. |
-| `POKE_BEEPER_CHAT_ID` | recommended | Beeper room ID of your Telegram↔Poke chat, so it's never fed back into Poke. |
-| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | yes | From my.telegram.org. |
-| `LLM_API_KEY` | yes | Key for your LLM provider (`EIGHTSTATE_API_KEY` / `OPENAI_API_KEY` also accepted). |
+| `POKE_BEEPER_CHAT_ID` | recommended | Beeper room ID of your Poke chat, so it's never fed back into Poke. |
+| `HANDOFF_TRANSPORT` | no | `imessage` (default, macOS) or `telegram`. |
+| `POKE_IMESSAGE_HANDLE` | imessage | Poke's iMessage number or chat GUID (default: Poke's public number). |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | telegram | From my.telegram.org. |
+| `LLM_PROVIDER` | no | `auto` (default), `codex`, or `openai`. |
+| `LLM_API_KEY` | openai | Key for your LLM provider (`EIGHTSTATE_API_KEY` / `OPENAI_API_KEY` also accepted). Leave blank to use the ChatGPT subscription via `codex login`. |
 | `LLM_BASE_URL` | no | Defaults to `https://api.openai.com/v1`. |
-| `GATEKEEPER_MODEL` | no | Defaults to `gpt-4o-mini`. Use a cheap, fast model. |
+| `GATEKEEPER_MODEL` / `CODEX_MODEL` | no | Defaults to `gpt-5.4-mini`. Use a cheap, fast model. |
 | `BEEPER_HOST` / `BEEPER_API_PORT` | no | Override Beeper's local API location. |
 | `POKE_TELEGRAM_USERNAME` | no | Poke's Telegram bot (default `interaction_poke_bot`). |
+| `MAX_BATCH_ENTRIES` | no | Max messages per gate call (default 20). |
 
 ### Finding `POKE_BEEPER_CHAT_ID`
 
@@ -195,8 +200,9 @@ always stays silent.
 - The bridge's **only outbound action** is messaging the Poke bot on Telegram.
   It never replies to third parties: Poke's Beeper access is read-only and drafts
   are for you to copy-paste.
-- On an LLM outage the gate **fails open for 1:1 DMs** (you still get pinged) and
-  **fails closed for group chats** (so an outage can't blast a busy group).
+- On an LLM outage the gate **fails closed** -- nothing is forwarded ungated --
+  and the bridge alerts Poke (rate-limited to once per 30 min) so you know
+  triage has paused. Transient network blips just skip that message.
 - **Never commit `.env` or `*.session`.** The session file is a logged-in
   Telegram session. Treat it like a password. `.gitignore` already covers both.
 
@@ -204,7 +210,7 @@ always stays silent.
 
 | File | Purpose |
 |---|---|
-| `bridge.py` | The whole bridge: Beeper listener, filters, debounce, single-instance lock, the LLM gate, and the Telegram handoff. |
+| `bridge.py` | The whole bridge: Beeper listener, filters, debounce, single-instance lock, the LLM gate, and the iMessage/Telegram handoff. |
 | `configure.py` | One-shot installer: credentials, dependencies, Telegram login, tunnel, always-on supervisor, and start. |
 | `watchdog.ps1` | Windows: starts the bridge windowless **and** relaunches it if the heartbeat goes stale. |
 | `run-watchdog-hidden.vbs` | Windows: runs the watchdog with no console window (used by the scheduled task). |

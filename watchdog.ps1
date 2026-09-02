@@ -43,7 +43,12 @@ if ($procs.Count -gt 0) {
 
 Add-Content $logFile "$(Get-Date -Format s) launching bridge (heartbeat age ${age}s)"
 
-# Launch with no console window. cmd handles the log redirect; uv resolves deps.
+# Launch with no console window. Bridge output already lands in the rotating
+# bridge.log, so cap the launcher redirect to stop it growing without bound.
+$launchLog = Join-Path $PSScriptRoot 'bridge-launch.log'
+if ((Test-Path $launchLog) -and ((Get-Item $launchLog).Length -gt 5MB)) {
+    Remove-Item $launchLog -Force
+}
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
 $psi.FileName         = 'cmd.exe'
 $psi.Arguments        = '/c uv run --with-requirements requirements.txt python bridge.py >> bridge-launch.log 2>&1'
