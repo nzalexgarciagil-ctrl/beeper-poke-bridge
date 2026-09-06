@@ -626,32 +626,25 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+_singleton_lock = None
+
+
 def acquire_singleton() -> bool:
-    """Take the single-instance lock. Returns False if another bridge is live."""
-    if LOCK_FILE.exists():
-        try:
-            other = int(LOCK_FILE.read_text(encoding="utf-8").strip() or "0")
-        except Exception:
-            other = 0
-        if other and other != os.getpid() and _pid_alive(other):
-            log.warning("Another bridge instance is already running (pid %d); exiting.", other)
-            return False
-        log.info("Clearing stale lock from pid %s", other or "?")
-    try:
-        LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
-    except Exception as e:
-        log.warning("Could not write lock file: %s", e)
+    """Hold an OS lock rather than trusting a potentially reused process ID."""
+    global _singleton_lock
+    from singleton_lock import SingletonLock
+    if _singleton_lock is None:
+        _singleton_lock = SingletonLock(LOCK_FILE)
+    if not _singleton_lock.acquire():
+        log.warning("Another bridge instance holds the lock; exiting.")
+        return False
     atexit.register(_release_singleton)
     return True
 
 
 def _release_singleton():
-    """Remove the lock file if we still own it."""
-    try:
-        if LOCK_FILE.exists() and LOCK_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
-            LOCK_FILE.unlink()
-    except Exception:
-        pass
+    if _singleton_lock is not None:
+        _singleton_lock.release()
 
 
 def beeper_get(path: str) -> dict | list | None:
